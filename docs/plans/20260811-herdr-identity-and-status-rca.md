@@ -28,6 +28,25 @@ firms up over time.** §6 and §7 are backend-independent and pre-existing; herd
 only made §6 visible, because it produced a window whose transcript ccgram
 never saw go active.
 
+## Upstream issues and branches
+
+Upstream requires an issue before a PR, and agreement on the approach in that
+issue before the implementation is submitted (`CONTRIBUTING.md`). The defects
+are therefore filed grouped by shared root cause, not one issue per symptom.
+
+| Issue | Covers | Branch (code only, no docs) |
+|---|---|---|
+| [alexei-led/ccgram#149](https://github.com/alexei-led/ccgram/issues/149) | §2–§5 — one pane observed under two window ids | `fix/herdr-window-identity` (4 commits) |
+| [alexei-led/ccgram#150](https://github.com/alexei-led/ccgram/issues/150) | §6–§8 — status that never settles | `fix/status-never-settles` (3 commits) |
+
+Both branch from upstream `main` at v4.5.1 and carry no documentation: this RCA
+and the `CHANGELOG` entry live on this fork's `main` only, since upstream
+manages its own changelog. `.claude/rules/architecture.md` *is* carried, because
+it documents the seams the code introduces.
+
+PRs are deliberately not opened yet — upstream's process is to settle the
+approach on the issue first.
+
 ---
 
 ## 1. A detected agent is invisible until it publishes a session
