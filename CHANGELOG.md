@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Deliver agent replies on Herdr by reconciling the two window identities one pane is observed under — a topic could show live status yet never receive a message.
+- Keep a newly created Herdr pane alive when its agent stops at a prompt before publishing a session, instead of rolling the creation back and killing it.
+- Follow a superseded window id through topic creation, so a healthy session is no longer reported as "did not register in time" and left quarantined.
+- Keep the stale-window-state sweep off a window that is mid-creation, preserving its cwd, provider, approval mode and ccgram origin.
+- Clear the typing indicator and settle the topic emoji once an agent finishes; a window that reached idle or done no longer re-enters the startup grace.
+- Repaint topics promptly after a restart instead of showing every inherited window as active for about a minute.
+- Stop counting transcript history replayed after a restart as live activity.
+
 ## [4.5.1] - 2026-08-08
 
 ### Fixed
