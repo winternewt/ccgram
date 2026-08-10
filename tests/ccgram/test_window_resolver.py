@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
@@ -10,8 +11,18 @@ from ccgram.window_resolver import (
     LiveWindow,
     is_window_id,
     migrate_window_aliases,
+    reset_alias_redirects,
     resolve_stale_ids,
+    resolve_window_alias,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clean_alias_redirects() -> Iterator[None]:
+    """Redirects are module state; one test must not answer the next."""
+    reset_alias_redirects()
+    yield
+    reset_alias_redirects()
 
 
 class TestIsWindowId:
@@ -296,3 +307,37 @@ class TestMigrateWindowAliases:
             == []
         )
         assert window_states["canonical"].session_id == "sid-1"
+
+
+class TestResolveWindowAlias:
+    """A flow holding an id minted before supersession — the topic-creation
+    wait is the one that matters — must be able to ask what that window is
+    called now, or it waits out its timeout on a key nothing will write."""
+
+    def test_an_id_that_was_never_superseded_resolves_to_itself(self) -> None:
+        assert resolve_window_alias("canonical") == "canonical"
+
+    def test_resolves_a_superseded_id_to_the_current_one(self) -> None:
+        migrate_window_aliases(
+            {"alias": "canonical"},
+            {"alias": _ws_full(session_id="sid-1")},
+            {},
+            {},
+            {},
+            {},
+        )
+
+        assert resolve_window_alias("alias") == "canonical"
+
+    def test_follows_a_chain_of_supersessions(self) -> None:
+        states = {"first": _ws_full(session_id="sid-1")}
+        migrate_window_aliases({"first": "second"}, states, {}, {}, {}, {})
+        migrate_window_aliases({"second": "third"}, states, {}, {}, {}, {})
+
+        assert resolve_window_alias("first") == "third"
+
+    def test_records_a_supersession_no_state_referenced_yet(self) -> None:
+        # The window whose state was already swept, or bound after the rename:
+        # nothing to migrate, but the identity moved and callers still need it.
+        assert migrate_window_aliases({"alias": "canonical"}, {}, {}, {}, {}, {}) == []
+        assert resolve_window_alias("alias") == "canonical"

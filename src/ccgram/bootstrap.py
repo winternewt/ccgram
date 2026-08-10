@@ -353,6 +353,12 @@ def reset_for_testing() -> None:
 
     shell_capture._reset_approval_callback_for_testing()
 
+    # Lazy: window-id supersessions are per-run state; a redirect recorded by
+    # one test must not answer a lookup in the next.
+    from .window_resolver import reset_alias_redirects
+
+    reset_alias_redirects()
+
     _callbacks_wired = False
     session_monitor = None
     # Lazy: test reset must also discard ephemeral input correlations.

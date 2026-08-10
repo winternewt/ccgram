@@ -61,6 +61,45 @@ _MIGRATED_STATE_FIELDS = (
     "window_name",
 )
 
+# Superseded id -> the id that identifies the same window now. Written by
+# ``migrate_window_aliases`` as it folds state over, read by anything still
+# holding an id minted before the supersession — the topic-creation flow is
+# the one that matters: it creates a window, then waits for the hook to
+# register it, and on a backend whose identity firms up over time the hook
+# writes under an id creation never saw.
+#
+# In-memory and bounded: a redirect only has to outlive the flows holding the
+# old id (seconds), and every durable store has already been repointed.
+_MAX_ALIAS_REDIRECTS = 256
+_alias_redirects: dict[str, str] = {}
+
+
+def resolve_window_alias(window_id: str) -> str:
+    """Return the id ``window_id`` answers to now, following supersessions.
+
+    Identity can be superseded more than once, so this walks the chain. A
+    window whose identity was never superseded resolves to itself, which
+    makes it safe to call unconditionally on any backend.
+    """
+    seen: set[str] = set()
+    current = window_id
+    while current in _alias_redirects and current not in seen:
+        seen.add(current)
+        current = _alias_redirects[current]
+    return current
+
+
+def _record_alias_redirect(alias_id: str, canonical_id: str) -> None:
+    """Remember that ``alias_id`` now resolves to ``canonical_id``."""
+    _alias_redirects[alias_id] = canonical_id
+    while len(_alias_redirects) > _MAX_ALIAS_REDIRECTS:
+        del _alias_redirects[next(iter(_alias_redirects))]
+
+
+def reset_alias_redirects() -> None:
+    """Drop every recorded redirect — only for tests."""
+    _alias_redirects.clear()
+
 
 def _migrate_window_state(
     window_states: dict, alias_id: str, canonical_id: str
@@ -151,6 +190,10 @@ def migrate_window_aliases(
     for alias_id, canonical_id in aliases.items():
         if alias_id == canonical_id or not alias_id or not canonical_id:
             continue
+        # Record the redirect before the reference check: the identity is
+        # superseded whether or not any state moved, and a flow still holding
+        # the old id needs the answer either way.
+        _record_alias_redirect(alias_id, canonical_id)
         if not _alias_is_referenced(
             alias_id,
             window_states,

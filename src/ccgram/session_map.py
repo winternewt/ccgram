@@ -416,9 +416,22 @@ class SessionMapSync:
         atomic_write_json(config.session_map_file, session_map)
 
     async def wait_for_session_map_entry(
-        self, window_id: str, timeout: float = 5.0, interval: float = 0.5
+        self,
+        window_id: str,
+        timeout: float = 5.0,
+        interval: float = 0.5,
+        *,
+        resolve_window_id: Callable[[str], str] | None = None,
     ) -> bool:
         """Poll session_map.json until an entry for window_id appears.
+
+        ``resolve_window_id`` is re-applied on every poll. A backend whose
+        window identity firms up over time (Herdr mints the durable one once
+        the agent session is published) can supersede the id the caller was
+        handed *while this wait runs*, and the hook then writes its entry
+        under the new one. Re-resolving each pass means the wait watches the
+        key the window actually answers to instead of timing out on an id
+        nothing will ever write again. Callers on stable-id backends omit it.
 
         Returns True if the entry was found within timeout, False otherwise.
         """
@@ -427,10 +440,13 @@ class SessionMapSync:
             window_id,
             timeout,
         )
-        key = f"{session_map_prefix()}{window_id}"
+        current_id = window_id
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while loop.time() < deadline:
+            if resolve_window_id is not None:
+                current_id = resolve_window_id(window_id)
+            key = f"{session_map_prefix()}{current_id}"
             try:
                 if config.session_map_file.exists():
                     async with aiofiles.open(config.session_map_file, "r") as f:
@@ -442,7 +458,7 @@ class SessionMapSync:
                     if isinstance(info, dict):
                         parse_session_map_entry(info)
                         logger.debug(
-                            "session_map entry found for window_id %s", window_id
+                            "session_map entry found for window_id %s", current_id
                         )
                         await self.load_session_map(session_map)
                         return True
@@ -450,7 +466,7 @@ class SessionMapSync:
                 pass
             await asyncio.sleep(interval)
         logger.warning(
-            "Timed out waiting for session_map entry: window_id=%s", window_id
+            "Timed out waiting for session_map entry: window_id=%s", current_id
         )
         return False
 
