@@ -183,6 +183,14 @@ def _workspace_cwd_from_panes(
     return shared_cwd("cwd") if has_stable_cwd else shared_cwd("foreground_cwd")
 
 
+def _agent_name(launch_command: str | None) -> str:
+    """Best-effort agent name from a launch command (``claude --foo`` -> claude)."""
+    if not launch_command:
+        return ""
+    first = launch_command.split()[0]
+    return Path(first).name
+
+
 class HerdrError(RuntimeError):
     """A herdr CLI/socket call failed (exit≠0, bad JSON, or an error payload)."""
 
@@ -364,6 +372,9 @@ class HerdrManager:
         self._binary = shutil.which(binary) or binary
         self._run: HerdrRunner = runner or self._subprocess_run
         self._open_stream: HerdrStreamOpener = stream_opener or self._default_stream
+        # Targets minted for a pane Herdr has not classified yet (see
+        # _provisional_record). Dropped as soon as agent.list reports them.
+        self._provisional_targets: dict[str, HerdrLiveRecord] = {}
 
     def _default_stream(
         self, subscriptions: Sequence[Mapping[str, object]]
@@ -530,6 +541,7 @@ class HerdrManager:
             parsed = _parse_live_record(agent)
             if parsed is not None:
                 records.append(parsed)
+        self._forget_provisional(records)
         return records
 
     def target_id_for_live_record(self, record: Mapping[str, object]) -> str | None:
@@ -554,6 +566,9 @@ class HerdrManager:
         records = await self._agent_list_snapshot()
         matches = [record for record in records if record.target_id == target_id]
         if not matches:
+            provisional = await self._refresh_provisional(target_id)
+            if provisional is not None:
+                return provisional
             raise HerdrUnresolvedTargetError(
                 f"herdr session target unresolved: {target_id}"
             )
@@ -1019,12 +1034,74 @@ class HerdrManager:
             target.target_id,
         )
 
+    async def _pane_locator(self, pane_id: str) -> Mapping[str, object] | None:
+        """Return the raw ``pane list`` entry for *pane_id*, or None if it is gone."""
+        result = await self._call_json(["pane", "list"])
+        panes = (result or {}).get("panes")
+        if not isinstance(panes, list):
+            return None
+        for pane in panes:
+            if isinstance(pane, Mapping) and pane.get("pane_id") == pane_id:
+                return pane
+        return None
+
+    async def _provisional_record(
+        self, *, pane_id: str, agent: str
+    ) -> HerdrLiveRecord | None:
+        """Mint a terminal-derived target for a pane Herdr has not classified yet.
+
+        An agent that stops for input before reporting a session — Claude's
+        "do you trust the files in this folder?" prompt is the common case —
+        never appears in ``agent.list``, so creation would otherwise time out
+        and roll the tab away while the agent sits at the prompt. The pane
+        itself is visible from the moment it exists, and its ``terminal_id``
+        is exactly what a later sessionless record would hash, so the target
+        minted here is the one the agent will answer to. Once the session
+        arrives it becomes an alias of the session-derived target and the core
+        folds the state forward (``migrate_window_aliases``).
+        """
+        pane = await self._pane_locator(pane_id)
+        if pane is None:
+            return None
+        record = _parse_live_record({**pane, "agent": agent})
+        if record is not None:
+            self._provisional_targets[record.target_id] = record
+        return record
+
+    async def _refresh_provisional(self, target_id: str) -> HerdrLiveRecord | None:
+        """Re-resolve a provisional target against its pane's current locator.
+
+        Keeps an action working while the agent is still at a pre-session
+        prompt. The pane is re-read every time, so a closed pane drops the
+        target and the caller fails exactly as it would for any dead window.
+        """
+        known = self._provisional_targets.get(target_id)
+        if known is None:
+            return None
+        record = await self._provisional_record(
+            pane_id=known.pane_id, agent=known.composite.agent
+        )
+        if record is None or record.target_id != target_id:
+            self._provisional_targets.pop(target_id, None)
+            return None
+        return record
+
+    def _forget_provisional(self, records: Sequence[HerdrLiveRecord]) -> None:
+        """Drop provisional targets that Herdr now reports for itself."""
+        if not self._provisional_targets:
+            return
+        for record in records:
+            self._provisional_targets.pop(record.target_id, None)
+            for alias in record.alias_target_ids:
+                self._provisional_targets.pop(alias, None)
+
     async def _await_created_session_target(
         self,
         *,
         tab_id: str,
         pane_id: str,
         workspace_id: str | None,
+        agent: str,
     ) -> HerdrLiveRecord:
         """Wait for exactly one session reported for a newly-created pane."""
         loop = asyncio.get_running_loop()
@@ -1046,6 +1123,14 @@ class HerdrManager:
             if loop.time() >= deadline:
                 break
             await asyncio.sleep(_CREATED_SESSION_POLL_INTERVAL_SECONDS)
+        provisional = await self._provisional_record(pane_id=pane_id, agent=agent)
+        if provisional is not None:
+            logger.info(
+                "Herdr pane %s has not reported a session yet; binding its "
+                "terminal-derived target until it does",
+                pane_id,
+            )
+            return provisional
         raise HerdrUnresolvedTargetError("new Herdr pane did not report a session")
 
     async def create_topic_target(  # noqa: C901
@@ -1117,7 +1202,10 @@ class HerdrManager:
                 if not await self._call_ok(["pane", "run", pane_id, command]):
                     raise HerdrError("Failed to start agent in Herdr tab")
             record = await self._await_created_session_target(
-                tab_id=tab_id, pane_id=pane_id, workspace_id=workspace_id
+                tab_id=tab_id,
+                pane_id=pane_id,
+                workspace_id=workspace_id,
+                agent=_agent_name(launch_command),
             )
             return TopicTargetResult(
                 record.target_id,
@@ -1206,7 +1294,10 @@ class HerdrManager:
             ):
                 raise HerdrError("Failed to start agent in Herdr worktree")
             record = await self._await_created_session_target(
-                tab_id=tab_id, pane_id=pane_id, workspace_id=workspace_id
+                tab_id=tab_id,
+                pane_id=pane_id,
+                workspace_id=workspace_id,
+                agent=_agent_name(launch_command),
             )
         except BaseException as exc:
             await self._call_ok(["tab", "close", tab_id])
