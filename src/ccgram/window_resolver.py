@@ -101,6 +101,35 @@ def reset_alias_redirects() -> None:
     _alias_redirects.clear()
 
 
+# Fields the *user* chose at creation whose defaults are meaningful values
+# rather than blanks — the "fill only what's empty" rule below cannot tell a
+# default apart from a choice, so they need their own carry-over. The default
+# is read off the state class, never restated here.
+_CREATION_CHOICE_FIELDS = ("origin", "approval_mode")
+_NO_DEFAULT = object()
+
+
+def _adopt_creation_choices(current: object, stale: object) -> None:
+    """Carry the creation flow's choices onto a state built from hook data.
+
+    The window a hook registers is built with defaults; when it turns out to
+    be the same window a creation flow just configured, the defaults must not
+    win. Losing ``origin`` puts a ccgram-created window outside ccgram's
+    lifecycle; losing ``approval_mode`` drops the YOLO badge from its topic.
+    """
+    for name in _CREATION_CHOICE_FIELDS:
+        # A dataclass keeps its plain defaults as class attributes, so the
+        # class itself is the source of "what this field looks like when
+        # nobody chose". A state type that exposes no such attribute simply
+        # has no default to compare against, and is left alone.
+        default = getattr(type(current), name, _NO_DEFAULT)
+        if default is _NO_DEFAULT:
+            continue
+        chosen = getattr(stale, name, default)
+        if getattr(current, name, default) == default and chosen != default:
+            setattr(current, name, chosen)
+
+
 def _migrate_window_state(
     window_states: dict, alias_id: str, canonical_id: str
 ) -> None:
@@ -115,6 +144,7 @@ def _migrate_window_state(
     # Both exist: the alias entry is the hook-written one, so it is the side
     # carrying session identity. Fill only what the canonical entry lacks —
     # never overwrite a value the canonical id already resolved for itself.
+    _adopt_creation_choices(current, stale)
     for field in _MIGRATED_STATE_FIELDS:
         if not getattr(current, field, "") and getattr(stale, field, ""):
             setattr(current, field, getattr(stale, field))

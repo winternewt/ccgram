@@ -43,6 +43,40 @@ logger = structlog.get_logger()
 
 _DEFAULT_PRIMARY_SESSION_GRACE_SEC = 60.0
 
+# "A creation flow currently owns this window" — wired at startup to the
+# topic-creation flow's pending set, which lives with the flow that owns it
+# (a core → handlers import would invert the dependency).
+_in_flight_window_predicate: Callable[[str], bool] | None = None
+
+
+def register_in_flight_window_predicate(predicate: Callable[[str], bool]) -> None:
+    """Wire the in-flight-creation check (called once at startup).
+
+    Raises RuntimeError if called more than once — wiring happens exactly
+    once at startup; double registration is a programming error.
+    """
+    global _in_flight_window_predicate
+    if _in_flight_window_predicate is not None:
+        raise RuntimeError("register_in_flight_window_predicate already registered")
+    _in_flight_window_predicate = predicate
+
+
+def _reset_in_flight_window_predicate_for_testing() -> None:
+    """Restore the unwired default — only for tests."""
+    global _in_flight_window_predicate
+    _in_flight_window_predicate = None
+
+
+def _creation_in_flight(window_id: str) -> bool:
+    """Whether a creation flow currently owns this window id.
+
+    Unwired (``doctor``, ``status``, unit tests) means nothing is being
+    created, so nothing is protected.
+    """
+    if _in_flight_window_predicate is None:
+        return False
+    return _in_flight_window_predicate(window_id)
+
 
 def _primary_session_grace_sec() -> float:
     raw = os.getenv("CCGRAM_NESTED_SESSION_GRACE_SEC")
@@ -395,6 +429,13 @@ class SessionMapSync:
                 and w not in bound_wids
                 and window_store.get_session_id_for_window(w) not in old_format_sids
                 and not window_store.is_archived_legacy_herdr(w)
+                # A window being created is neither in the session map (its
+                # hook has not fired) nor bound (the flow binds afterwards),
+                # so it looks exactly like a stale one. Dropping it discards
+                # the cwd, provider, approval mode and origin the flow just
+                # wrote — the window then comes back re-derived and, having
+                # lost its ccgram origin, outside ccgram's lifecycle.
+                and not _creation_in_flight(w)
             )
         ]
         for wid in stale_wids:

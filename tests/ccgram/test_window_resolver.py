@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ccgram.window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN, WindowState
 from ccgram.window_resolver import (
     LiveWindow,
     is_window_id,
@@ -292,6 +293,38 @@ class TestMigrateWindowAliases:
         # Gaps are still filled from the superseded entry.
         assert window_states["canonical"].cwd == "/old"
         assert window_states["canonical"].provider_name == "claude"
+
+    def test_carries_creation_choices_onto_a_hook_built_state(self) -> None:
+        # Real WindowState here: the carry-over reads each field's default off
+        # the state class, which a SimpleNamespace stand-in cannot express.
+        # The hook-built entry holds defaults for everything the creation flow
+        # chose; letting them win drops the YOLO badge and puts a
+        # ccgram-created window outside ccgram's lifecycle.
+        alias = WindowState(
+            session_id="sid-1",
+            approval_mode="yolo",
+            origin=CCGRAM_CREATED_WINDOW_ORIGIN,
+        )
+        window_states = {"alias": alias, "canonical": WindowState(session_id="fresh")}
+
+        migrate_window_aliases({"alias": "canonical"}, window_states, {}, {}, {}, {})
+
+        assert window_states["canonical"].approval_mode == "yolo"
+        assert window_states["canonical"].origin == CCGRAM_CREATED_WINDOW_ORIGIN
+
+    def test_never_overrides_a_choice_the_live_id_already_holds(self) -> None:
+        canonical = WindowState(session_id="fresh", approval_mode="yolo")
+
+        migrate_window_aliases(
+            {"alias": "canonical"},
+            {"alias": WindowState(session_id="sid-1"), "canonical": canonical},
+            {},
+            {},
+            {},
+            {},
+        )
+
+        assert canonical.approval_mode == "yolo"
 
     def test_unreferenced_or_self_aliases_are_not_migrations(self) -> None:
         window_states = {"canonical": _ws_full(session_id="sid-1")}

@@ -9,12 +9,25 @@ no hook entry yet, and no topic binding until the creation flow finishes.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from ccgram.session import session_manager as _session_manager  # noqa: F401  (wires window_store)
-from ccgram.session_map import SessionMapSync
+from ccgram.session_map import (
+    SessionMapSync,
+    _reset_in_flight_window_predicate_for_testing,
+    register_in_flight_window_predicate,
+)
+from ccgram.window_state_store import WindowState, window_store
+
+
+@pytest.fixture(autouse=True)
+def _unwired_predicate() -> Iterator[None]:
+    _reset_in_flight_window_predicate_for_testing()
+    yield
+    _reset_in_flight_window_predicate_for_testing()
 
 
 @pytest.fixture
@@ -74,3 +87,35 @@ class TestWaitFollowsSupersession:
 
 async def _noop_load(session_map: dict) -> None:
     return None
+
+
+class TestStaleSweepSparesInFlightCreations:
+    """Dropping the state of a window mid-creation discards the cwd, provider,
+    approval mode and origin the flow just wrote; the window returns
+    re-derived and, having lost its ccgram origin, outside its lifecycle."""
+
+    def test_keeps_a_window_a_creation_flow_owns(self, sync: SessionMapSync) -> None:
+        window_store.window_states["@9"] = WindowState(cwd="/repo")
+        register_in_flight_window_predicate(lambda wid: wid == "@9")
+
+        try:
+            removed = sync._remove_stale_window_states(
+                valid_wids=set(), old_format_sids=set()
+            )
+        finally:
+            window_store.window_states.pop("@9", None)
+
+        assert not removed
+
+    def test_still_removes_a_window_nothing_owns(self, sync: SessionMapSync) -> None:
+        window_store.window_states["@9"] = WindowState(cwd="/repo")
+        register_in_flight_window_predicate(lambda _wid: False)
+
+        try:
+            removed = sync._remove_stale_window_states(
+                valid_wids=set(), old_format_sids=set()
+            )
+        finally:
+            window_store.window_states.pop("@9", None)
+
+        assert removed

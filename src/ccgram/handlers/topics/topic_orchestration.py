@@ -190,6 +190,16 @@ def _is_pending_user_creation(window_id: str) -> bool:
     return True
 
 
+def is_pending_creation(window_id: str) -> bool:
+    """Public read of the pending set, for subsystems outside this flow.
+
+    ``session_map`` uses it to keep a window that is mid-creation out of its
+    stale-state sweep: until the flow binds, the window is indistinguishable
+    from an abandoned one.
+    """
+    return _is_pending_user_creation(window_id)
+
+
 async def _auto_detect_provider(window_id: str) -> None:
     """Auto-detect provider from the running process if not already set.
 
