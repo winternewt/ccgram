@@ -227,6 +227,7 @@ class HerdrLiveRecord:
     pane_id: str
     tab_id: str
     workspace_id: str
+    alias_target_ids: tuple[str, ...] = ()
 
 
 def _session_field(value: object) -> str | None:
@@ -297,13 +298,30 @@ def _parse_live_record(record: Mapping[str, object]) -> HerdrLiveRecord | None:
         raise HerdrMalformedRecordError(
             "agent.list contains an incomplete live locator"
         )
+    target_id = herdr_session_target_id(composite)
+    # Herdr publishes ``agent`` as soon as it detects the CLI but
+    # ``agent_session`` only once the agent reports its session id, so the
+    # ccgram SessionStart hook can resolve this pane to the terminal-derived
+    # fallback moments before the session-derived target exists. That earlier
+    # id is not stale state to discard: it is where session_map.json and
+    # window_states were written. Publish it as an alias so the core can move
+    # that state (and any topic bound to it) onto the durable target.
+    alias_id = herdr_session_target_id(
+        HerdrSessionComposite(
+            source="herdr",
+            agent=composite.agent,
+            kind="terminal",
+            value=locators["terminal_id"] or "",
+        )
+    )
     return HerdrLiveRecord(
-        target_id=herdr_session_target_id(composite),
+        target_id=target_id,
         composite=composite,
         terminal_id=locators["terminal_id"] or "",
         pane_id=locators["pane_id"] or "",
         tab_id=locators["tab_id"] or "",
         workspace_id=locators["workspace_id"] or "",
+        alias_target_ids=() if alias_id == target_id else (alias_id,),
     )
 
 
@@ -553,6 +571,7 @@ class HerdrManager:
             window_name=label,
             cwd="",
             pane_current_command=record.composite.agent,
+            alias_window_ids=record.alias_target_ids,
         )
 
     async def _reconciliation_labels(

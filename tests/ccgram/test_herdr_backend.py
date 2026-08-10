@@ -171,6 +171,36 @@ async def test_list_windows_exposes_all_detected_agent_targets() -> None:
     assert all("w2:" not in win.window_id for win in windows)
 
 
+async def test_session_target_aliases_the_hook_time_sessionless_target() -> None:
+    """The same pane, before and after Herdr publishes its agent session.
+
+    The ccgram SessionStart hook resolves the pane while it is still
+    sessionless, so session_map.json and window_states are written under the
+    terminal-derived target; every later snapshot yields the session-derived
+    one, which is what a topic binds to. The adapter has to declare the first
+    as an alias of the second, or the core cannot fold the two together and
+    inbound routing never matches.
+    """
+    at_hook_time = {
+        "terminal_id": "term-a",
+        "pane_id": "w2:p1",
+        "tab_id": "w2:t1",
+        "workspace_id": "w2",
+        "agent": "claude",
+    }
+    once_published = _agent(value="session-a")
+
+    hook_window = (await _manager(_live_fake(at_hook_time)).list_windows())[0]
+    live_window = (await _manager(_live_fake(once_published)).list_windows())[0]
+
+    assert hook_window.window_id == _sessionless_target("term-a")
+    assert live_window.window_id == _target("session-a")
+    assert hook_window.window_id != live_window.window_id
+    assert live_window.alias_window_ids == (hook_window.window_id,)
+    # A pane that never publishes a session is already its own identity.
+    assert hook_window.alias_window_ids == ()
+
+
 async def test_sessionless_agent_target_resolves_through_fresh_snapshot() -> None:
     sessionless = {
         "terminal_id": "term-b",

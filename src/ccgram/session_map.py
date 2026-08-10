@@ -497,6 +497,47 @@ class SessionMapSync:
         except OSError as exc:
             logger.warning("Failed to lock session_map for pruning: %s", exc)
 
+    def rename_session_map_entry(self, alias_window_id: str, window_id: str) -> bool:
+        """Re-key a hook-written entry from a superseded window id onto the live one.
+
+        Pairs with ``window_resolver.migrate_window_aliases``: that moves the
+        in-memory state, this moves the file the hook wrote it to. Without the
+        file side, ``load_session_map`` recreates the alias window state on the
+        next cycle and the reconciliation never sticks.
+
+        Returns True when the file changed. When both keys exist the live entry
+        wins and the alias is simply dropped — the hook has already written a
+        fresher entry under the current identity.
+        """
+        map_file = config.session_map_file
+        if alias_window_id == window_id or not map_file.exists():
+            return False
+        prefix = session_map_prefix()
+        alias_key, live_key = f"{prefix}{alias_window_id}", f"{prefix}{window_id}"
+        lock_path = map_file.with_suffix(".lock")
+        try:
+            with open(lock_path, "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    # Re-read under the hook-compatible lock so a concurrent
+                    # hook write cannot be lost between read and write.
+                    raw = _read_session_map_for_pruning()
+                    if raw is None or alias_key not in raw:
+                        return False
+                    entry = raw.pop(alias_key)
+                    if live_key not in raw:
+                        raw[live_key] = entry
+                    atomic_write_json(map_file, raw)
+                    logger.info(
+                        "Re-keyed session_map entry %s -> %s", alias_key, live_key
+                    )
+                    return True
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        except OSError as exc:
+            logger.warning("Failed to lock session_map for re-keying: %s", exc)
+            return False
+
     def register_hookless_session(
         self,
         window_id: str,

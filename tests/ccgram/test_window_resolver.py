@@ -9,6 +9,7 @@ import pytest
 from ccgram.window_resolver import (
     LiveWindow,
     is_window_id,
+    migrate_window_aliases,
     resolve_stale_ids,
 )
 
@@ -198,3 +199,100 @@ class TestGuardedTargetRecovery:
             is True
         )
         assert "@1" in window_states
+
+
+def _ws_full(
+    name: str = "",
+    session_id: str = "",
+    cwd: str = "",
+    transcript_path: str = "",
+    provider_name: str = "",
+) -> SimpleNamespace:
+    """WindowState stand-in carrying every field the alias migration folds."""
+    return SimpleNamespace(
+        window_name=name,
+        session_id=session_id,
+        cwd=cwd,
+        transcript_path=transcript_path,
+        provider_name=provider_name,
+    )
+
+
+class TestMigrateWindowAliases:
+    """The hook writes state under a provisional id; the topic binds the durable
+    one. Unless the two are folded together, inbound routing — which matches on
+    the *bound* window's session id — never matches and replies are dropped."""
+
+    def test_folds_hook_state_onto_the_id_the_topic_bound(self) -> None:
+        window_states = {
+            "alias": _ws_full(
+                session_id="sid-1", cwd="/repo", transcript_path="/t.jsonl"
+            )
+        }
+        chat_bindings = {(7, -100, 41): "canonical"}
+
+        migrations = migrate_window_aliases(
+            {"alias": "canonical"},
+            window_states,
+            {},
+            chat_bindings,
+            {},
+            {"alias": "proj ▸ 1"},
+        )
+
+        assert [(m.alias_id, m.canonical_id) for m in migrations] == [
+            ("alias", "canonical")
+        ]
+        assert "alias" not in window_states
+        # The bound window now carries the session id, which is the whole point.
+        assert window_states["canonical"].session_id == "sid-1"
+        assert window_states["canonical"].transcript_path == "/t.jsonl"
+        assert chat_bindings[(7, -100, 41)] == "canonical"
+
+    def test_repoints_a_topic_bound_to_the_superseded_id(self) -> None:
+        window_states = {"canonical": _ws_full(session_id="sid-1")}
+        thread_bindings = {7: {41: "alias"}}
+        offsets = {7: {"alias": 12}}
+        display_names = {"alias": "proj ▸ 1"}
+
+        migrate_window_aliases(
+            {"alias": "canonical"},
+            window_states,
+            thread_bindings,
+            {},
+            offsets,
+            display_names,
+        )
+
+        assert thread_bindings[7][41] == "canonical"
+        assert offsets[7] == {"canonical": 12}
+        assert display_names == {"canonical": "proj ▸ 1"}
+
+    def test_never_overwrites_what_the_live_id_already_resolved(self) -> None:
+        window_states = {
+            "alias": _ws_full(session_id="stale", cwd="/old", provider_name="claude"),
+            "canonical": _ws_full(session_id="fresh"),
+        }
+
+        migrate_window_aliases({"alias": "canonical"}, window_states, {}, {}, {}, {})
+
+        assert "alias" not in window_states
+        assert window_states["canonical"].session_id == "fresh"
+        # Gaps are still filled from the superseded entry.
+        assert window_states["canonical"].cwd == "/old"
+        assert window_states["canonical"].provider_name == "claude"
+
+    def test_unreferenced_or_self_aliases_are_not_migrations(self) -> None:
+        window_states = {"canonical": _ws_full(session_id="sid-1")}
+        assert (
+            migrate_window_aliases(
+                {"unknown": "canonical", "canonical": "canonical"},
+                window_states,
+                {},
+                {},
+                {},
+                {},
+            )
+            == []
+        )
+        assert window_states["canonical"].session_id == "sid-1"
