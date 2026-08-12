@@ -369,6 +369,93 @@ class TestHookMainValidation:
         assert not (tmp_path / "events.jsonl").exists()
 
 
+class TestSessionRekeyOrdering:
+    """``/clear`` re-keys a window's session, and the two hooks race.
+
+    Claude Code starts the replacement session before the previous one ends,
+    so the window receives SessionStart(new) and SessionEnd(old) in that order
+    under a single window key.
+    """
+
+    OLD_SESSION = "4d6afe40-7be5-42ff-94bf-c474919b60f4"
+    NEW_SESSION = "224fc376-8002-4653-9be6-efa2c5dff362"
+
+    def _run(self, monkeypatch: pytest.MonkeyPatch, payload: dict) -> None:
+        monkeypatch.setenv("TMUX_PANE", "%0")
+        monkeypatch.setattr(sys, "argv", ["ccgram", "hook"])
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="ccgram\t@0\tproject\n", stderr=""
+        )
+        with patch("ccgram.hook.subprocess.run", return_value=mock_result):
+            hook_main()
+
+    def _session_id(self, tmp_path) -> str:
+        session_map = json.loads((tmp_path / "session_map.json").read_text())
+        return session_map["ccgram:@0"]["session_id"]
+
+    def test_session_end_does_not_resurrect_the_session_it_ends(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+        for session_id in (self.OLD_SESSION, self.NEW_SESSION):
+            self._run(
+                monkeypatch,
+                {
+                    "session_id": session_id,
+                    "cwd": "/tmp",
+                    "hook_event_name": "SessionStart",
+                    "source": "clear",
+                    "transcript_path": f"/transcripts/{session_id}.jsonl",
+                },
+            )
+        assert self._session_id(tmp_path) == self.NEW_SESSION
+
+        self._run(
+            monkeypatch,
+            {
+                "session_id": self.OLD_SESSION,
+                "cwd": "/tmp",
+                "hook_event_name": "SessionEnd",
+                "reason": "clear",
+                "transcript_path": f"/transcripts/{self.OLD_SESSION}.jsonl",
+            },
+        )
+
+        # The window still runs the session that SessionStart announced. Left
+        # to refresh the map, SessionEnd points the monitor at a transcript
+        # nothing writes to any more, and every message the live session
+        # produces is dropped for want of a session to route it under.
+        assert self._session_id(tmp_path) == self.NEW_SESSION
+
+    def test_stop_still_refreshes_a_stale_entry(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """The Pi/cc-thingz path the refresh exists for keeps working."""
+        monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+        self._run(
+            monkeypatch,
+            {
+                "session_id": self.OLD_SESSION,
+                "cwd": "/tmp",
+                "hook_event_name": "SessionStart",
+                "source": "startup",
+                "transcript_path": f"/transcripts/{self.OLD_SESSION}.jsonl",
+            },
+        )
+        self._run(
+            monkeypatch,
+            {
+                "session_id": self.NEW_SESSION,
+                "cwd": "/tmp",
+                "hook_event_name": "Stop",
+                "stop_reason": "end_turn",
+                "transcript_path": f"/transcripts/{self.NEW_SESSION}.jsonl",
+            },
+        )
+        assert self._session_id(tmp_path) == self.NEW_SESSION
+
+
 class TestUninstallHook:
     @pytest.mark.parametrize(
         "installed_command",
