@@ -6,6 +6,7 @@ from telegram.error import BadRequest, TelegramError
 
 from ccgram.handlers.callback_data import CB_SYNC_DISMISS, CB_SYNC_FIX
 from ccgram.handlers.sync_command import (
+    _close_duplicate_topics,
     _close_ghost_topics,
     _format_report,
     _probe_dead_topics,
@@ -949,3 +950,56 @@ class TestSyncFixDeadTopic:
             mock_handle.assert_called_once()
             report_text = mock_edit.call_args[0][1]
             assert "Recreated 1 topic" in report_text
+
+
+class TestDuplicateTopicClose:
+    """A window bound to two topics: close the one nothing answers in."""
+
+    def _issue(self) -> AuditIssue:
+        return AuditIssue(
+            "duplicate_binding",
+            "user:100 thread:2 window:@1 (proj) — window already answers in thread 1",
+            fixable=True,
+        )
+
+    async def test_closes_and_unbinds_the_empty_topic(self, _patch_deps) -> None:
+        _, _, _, mock_tr, _, _ = _patch_deps
+        mock_tr.get_window_for_thread.return_value = "@1"
+        mock_tr.resolve_chat_id.return_value = -500
+        client = AsyncMock()
+
+        with patch("ccgram.handlers.sync_command.clear_topic_state") as mock_clear:
+            closed = await _close_duplicate_topics(client, [self._issue()])
+
+        assert closed == 1
+        client.delete_forum_topic.assert_awaited_once_with(-500, 2)
+        mock_tr.unbind_thread.assert_called_once_with(100, 2)
+        # The window is alive and still serving the keeper topic, so its
+        # session-scoped state must survive the cleanup.
+        assert mock_clear.await_args.kwargs["window_dead"] is False
+
+    async def test_skips_when_the_binding_already_moved(self, _patch_deps) -> None:
+        _, _, _, mock_tr, _, _ = _patch_deps
+        mock_tr.get_window_for_thread.return_value = "@other"
+        client = AsyncMock()
+
+        with patch("ccgram.handlers.sync_command.clear_topic_state"):
+            closed = await _close_duplicate_topics(client, [self._issue()])
+
+        assert closed == 0
+        client.delete_forum_topic.assert_not_awaited()
+        mock_tr.unbind_thread.assert_not_called()
+
+    async def test_leaves_the_binding_when_telegram_refuses(self, _patch_deps) -> None:
+        _, _, _, mock_tr, _, _ = _patch_deps
+        mock_tr.get_window_for_thread.return_value = "@1"
+        mock_tr.resolve_chat_id.return_value = -500
+        client = AsyncMock()
+        client.delete_forum_topic.side_effect = TelegramError("no rights")
+        client.close_forum_topic.side_effect = TelegramError("no rights")
+
+        with patch("ccgram.handlers.sync_command.clear_topic_state"):
+            closed = await _close_duplicate_topics(client, [self._issue()])
+
+        assert closed == 0
+        mock_tr.unbind_thread.assert_not_called()

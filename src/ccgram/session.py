@@ -637,7 +637,39 @@ class SessionManager:
                     )
                 )
 
-        # 7. Orphaned tmux windows (live, known to ccgram, but not bound to any topic)
+        # 7. One window answering for two topics. A window re-keyed while a
+        # topic was being created can end up bound twice — under its old
+        # identity and its new one — and folding the two onto one id leaves
+        # both threads pointing at it. The reverse index holds a single thread
+        # per window, so exactly one of them receives anything; the rest sit in
+        # the forum empty, and nothing else in this audit looks at a binding
+        # whose window is alive. The thread the router resolves is the keeper.
+        by_window: dict[tuple[int, int | None, str], list[int]] = {}
+        for uid, tid, wid in thread_router.iter_thread_bindings():
+            chat_id = thread_router.resolve_chat_id(uid, tid)
+            by_window.setdefault((uid, chat_id, wid), []).append(tid)
+        for (uid, chat_id, wid), thread_ids in by_window.items():
+            if len(thread_ids) == 1:
+                continue
+            keeper = thread_router.get_thread_for_window(uid, wid, chat_id=chat_id)
+            if keeper is None:
+                keeper = max(thread_ids)
+            display = thread_router.get_display_name(wid)
+            for tid in sorted(thread_ids):
+                if tid == keeper:
+                    continue
+                issues.append(
+                    AuditIssue(
+                        category="duplicate_binding",
+                        detail=(
+                            f"user:{uid} thread:{tid} window:{wid} ({display}) "
+                            f"— window already answers in thread {keeper}"
+                        ),
+                        fixable=True,
+                    )
+                )
+
+        # 8. Orphaned tmux windows (live, known to ccgram, but not bound to any topic)
         known_wids = session_map_wids | set(self.window_states.keys())
         for wid in live_window_ids:
             if wid not in bound_window_ids and wid in known_wids:

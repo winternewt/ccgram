@@ -1176,6 +1176,40 @@ class TestAuditState:
         assert len(stale) == 1
         assert stale[0].fixable
 
+    def test_duplicate_binding(self, mgr: SessionManager) -> None:
+        """One window, two topics — the state an alias fold can leave behind."""
+        thread_router.bind_thread(100, 1, "@1", chat_id=-500)
+        thread_router.chat_thread_bindings[(100, -500, 2)] = "@1"
+        thread_router.window_display_names["@1"] = "proj"
+
+        result = mgr.audit_state(live_window_ids={"@1"}, live_windows=[("@1", "proj")])
+
+        dupes = [i for i in result.issues if i.category == "duplicate_binding"]
+        assert len(dupes) == 1
+        # The router answers for thread 1, so thread 2 is the empty one.
+        assert "thread:2" in dupes[0].detail
+        assert "window:@1" in dupes[0].detail
+        assert "thread 1" in dupes[0].detail
+        assert dupes[0].fixable
+
+    def test_one_window_per_topic_is_not_duplicate(self, mgr: SessionManager) -> None:
+        thread_router.bind_thread(100, 1, "@1", chat_id=-500)
+        thread_router.bind_thread(100, 2, "@2", chat_id=-500)
+        result = mgr.audit_state(
+            live_window_ids={"@1", "@2"},
+            live_windows=[("@1", "a"), ("@2", "b")],
+        )
+        assert [i for i in result.issues if i.category == "duplicate_binding"] == []
+
+    def test_same_window_in_two_chats_is_not_duplicate(
+        self, mgr: SessionManager
+    ) -> None:
+        """Two chats are two scopes; one topic each is the intended shape."""
+        thread_router.bind_thread(100, 1, "@1", chat_id=-500)
+        thread_router.bind_thread(100, 2, "@1", chat_id=-600)
+        result = mgr.audit_state(live_window_ids={"@1"}, live_windows=[("@1", "proj")])
+        assert [i for i in result.issues if i.category == "duplicate_binding"] == []
+
     def test_orphaned_window(self, mgr: SessionManager) -> None:
         thread_router.bind_thread(100, 1, "@1")
         mgr.window_states["@5"] = WindowState(session_id="s1", cwd="/tmp")
