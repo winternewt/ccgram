@@ -60,6 +60,7 @@ _CATEGORY_LABELS: dict[str, str] = {
     "stale_offset": "stale offset entry",
     "display_name_drift": "display name drift",
     "orphaned_window": "unbound window (no topic)",
+    "duplicate_binding": "duplicate topic (window already answers elsewhere)",
     "legacy_herdr": "legacy Herdr binding (blocked; archive or explicitly rebind)",
 }
 
@@ -280,6 +281,59 @@ async def _close_ghost_topics(
                     window_id,
                 )
     return closed_count, manual_close_count
+
+
+async def _close_duplicate_topics(
+    client: TelegramClient, issues: list[AuditIssue]
+) -> int:
+    """Close topics for a window that already answers in another topic.
+
+    The duplicate is empty by construction — the router resolves one thread per
+    window, so this one never received anything — but it stays in the forum
+    looking like a session until somebody removes it. Returns the close count.
+    """
+    closed = 0
+    for issue in issues:
+        if issue.category != "duplicate_binding":
+            continue
+        match = _GHOST_RE.search(issue.detail)
+        if not match:
+            continue
+        user_id, thread_id, window_id = (
+            int(match.group(1)),
+            int(match.group(2)),
+            match.group(3),
+        )
+        if thread_router.get_window_for_thread(user_id, thread_id) != window_id:
+            continue
+        chat_id = thread_router.resolve_chat_id(user_id, thread_id)
+        if chat_id != user_id and not await _remove_topic(client, chat_id, thread_id):
+            logger.warning(
+                "Failed to delete/close duplicate topic thread=%d window=%s",
+                thread_id,
+                window_id,
+            )
+            continue
+        try:
+            # window_dead=False: the window is alive and still answering in the
+            # keeper topic. Qualified-scope cleanup would clear state that topic
+            # is using.
+            await clear_topic_state(
+                user_id,
+                thread_id,
+                client=client,
+                window_id=window_id,
+                window_dead=False,
+            )
+            thread_router.unbind_thread(user_id, thread_id)
+            closed += 1
+        except OSError, TelegramError:
+            logger.exception(
+                "Failed to clean up duplicate binding thread=%d window=%s",
+                thread_id,
+                window_id,
+            )
+    return closed
 
 
 async def _adopt_orphaned_windows(
@@ -527,7 +581,10 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
 
     await _sync_live_topic_names(client, live_ids)
 
-    # Enforcement: adopt orphans first so stale same-name topics can be rebound.
+    # Enforcement: drop duplicate topics before adoption, so a window counted
+    # as bound twice is bound once when orphan detection reads the bindings.
+    duplicate_count = await _close_duplicate_topics(client, pre_audit.issues)
+    # Adopt orphans next so stale same-name topics can be rebound.
     await _adopt_orphaned_windows(client, pre_audit.issues)
     closed_count, manual_close_count = await _close_ghost_topics(
         client, pre_audit.issues
@@ -545,7 +602,7 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
     text, keyboard = _format_report(
         post_audit,
         fixed_count=actual_fixed,
-        closed_topic_count=closed_count,
+        closed_topic_count=closed_count + duplicate_count,
         recreated_topic_count=recreated_count,
         manual_close_count=manual_close_count,
     )
