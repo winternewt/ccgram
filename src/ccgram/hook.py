@@ -75,6 +75,11 @@ _HOOK_EVENT_TYPES: tuple[str, ...] = (
     "TaskCompleted",
 )
 
+# Events that report the end of a session rather than the state of a window.
+# They arrive after the session they name is already gone, so they are not
+# evidence of what the window runs now — see _refresh_session_map_if_stale.
+_SESSION_TERMINAL_EVENTS: frozenset[str] = frozenset({"SessionEnd"})
+
 # Events that should not block the agent (async: true)
 _ASYNC_EVENTS: frozenset[str] = frozenset(
     {
@@ -1103,6 +1108,7 @@ def _read_session_map_entry(session_window_key: str) -> dict[str, str]:
 
 
 def _refresh_session_map_if_stale(
+    event: str,
     session_window_key: str,
     session_id: str,
     provider_name: str,
@@ -1118,7 +1124,14 @@ def _refresh_session_map_if_stale(
     can keep pointing at the previous provider's session. We use values the
     hook payload already carries — no external scanning — to avoid the
     recovery anti-pattern called out in PR #51.
+
+    A session's own end is the one event that says nothing about what the
+    window runs *now*, so it never refreshes: ``/clear`` starts the next
+    session before the previous one's SessionEnd arrives, and both carry the
+    same window key.
     """
+    if event in _SESSION_TERMINAL_EVENTS:
+        return
     existing = _read_session_map_entry(session_window_key)
     if not existing:
         # SessionStart owns initial creation; never extend the map from a
@@ -1336,6 +1349,7 @@ def _process_hook_stdin(
         return normalized
 
     _refresh_session_map_if_stale(
+        event,
         session_window_key,
         normalized.session_id,
         detected_provider,
