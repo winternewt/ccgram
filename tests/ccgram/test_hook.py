@@ -515,6 +515,39 @@ class TestSessionRekeyOrdering:
         assert self._session_id(tmp_path) == self.NEW_SESSION
 
 
+class TestSessionStartSource:
+    def test_session_start_event_records_its_source(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """The monitor reads this to tell a new transcript from a replayed one."""
+        monkeypatch.setenv("CCGRAM_DIR", str(tmp_path))
+        monkeypatch.setenv("TMUX_PANE", "%0")
+        monkeypatch.setattr(sys, "argv", ["ccgram", "hook"])
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                        "cwd": "/tmp",
+                        "hook_event_name": "SessionStart",
+                        "source": "clear",
+                    }
+                )
+            ),
+        )
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="ccgram\t@0\tproject\n", stderr=""
+        )
+        with patch("ccgram.hook.subprocess.run", return_value=mock_result):
+            hook_main()
+
+        event = json.loads((tmp_path / "events.jsonl").read_text().strip())
+        assert event["event"] == "SessionStart"
+        assert event["data"]["source"] == "clear"
+
+
 class TestUninstallHook:
     def test_uninstall_removes_hook(self, tmp_path, monkeypatch) -> None:
         settings_file = tmp_path / "settings.json"

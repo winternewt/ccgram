@@ -323,3 +323,74 @@ async def test_failed_startup_read_preserves_catch_up_boundary(tmp_path) -> None
 
     assert [msg.text for msg in messages] == ["b"]
     assert idle.get_last_activity("sess") is None
+
+
+async def test_unannounced_session_still_starts_at_the_end(tmp_path) -> None:
+    """A session ccgram meets for the first time keeps its history unsent."""
+    history = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"old"}]}}\n'
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(history, newline="\n")
+
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    reader = TranscriptReader(state, IdleTracker())
+
+    messages = []
+    await reader._process_session_file("sess", session_file, messages, window_id="@1")
+
+    assert messages == []
+    tracked = state.get_session("sess")
+    assert tracked is not None
+    assert tracked.last_byte_offset == session_file.stat().st_size
+
+
+async def test_fresh_session_delivers_what_it_wrote_before_first_poll(
+    tmp_path,
+) -> None:
+    """The turn between a session's start and ccgram's first sight of it.
+
+    ``/clear`` mints a session whose transcript starts empty, so there is no
+    history to protect a topic from — seeking to the end here drops the
+    agent's opening turn instead, and nothing later goes back for it.
+    """
+    written = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"reply"}]}}\n'
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(written, newline="\n")
+
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    reader = TranscriptReader(state, IdleTracker())
+    reader.note_fresh_session("sess")
+
+    messages = []
+    await reader._process_session_file("sess", session_file, messages, window_id="@1")
+
+    assert [msg.text for msg in messages] == ["reply"]
+    tracked = state.get_session("sess")
+    assert tracked is not None
+    assert tracked.last_byte_offset == session_file.stat().st_size
+
+
+async def test_fresh_mark_is_spent_once(tmp_path) -> None:
+    """Re-tracking a cleaned-up session must not replay it from the top."""
+    first = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"one"}]}}\n'
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(first, newline="\n")
+
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    reader = TranscriptReader(state, IdleTracker())
+    reader.note_fresh_session("sess")
+
+    messages = []
+    await reader._process_session_file("sess", session_file, messages, window_id="@1")
+    assert [msg.text for msg in messages] == ["one"]
+
+    reader.clear_session("sess")
+    messages.clear()
+    await reader._process_session_file("sess", session_file, messages, window_id="@1")
+
+    assert messages == []

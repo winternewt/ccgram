@@ -9,6 +9,7 @@ import pytest
 
 from ccgram.monitor_state import TrackedSession
 from ccgram.multiplexer.base import MultiplexerCapabilities, WindowRef
+from ccgram.providers.base import HookEvent
 from ccgram.providers.claude import ClaudeProvider
 from ccgram.providers.codex import CodexProvider
 from ccgram.session import SessionManager
@@ -1216,3 +1217,45 @@ def _make_gemini_provider():
     from ccgram.providers.gemini import GeminiProvider
 
     return GeminiProvider()
+
+
+class TestFreshSessionMarking:
+    """Which SessionStart events mean "this transcript starts empty"."""
+
+    def _event(self, source: str | None, session_id: str = "sess") -> HookEvent:
+        data: dict[str, object] = {"provider_name": "claude"}
+        if source is not None:
+            data["source"] = source
+        return HookEvent(
+            event_type="SessionStart",
+            window_key="ccgram:@0",
+            session_id=session_id,
+            data=data,
+            timestamp=0.0,
+        )
+
+    @pytest.mark.parametrize("source", ["clear", "startup"])
+    def test_new_transcript_is_marked(
+        self, monitor: SessionMonitor, source: str
+    ) -> None:
+        monitor._note_session_start(self._event(source))
+        assert "sess" in monitor._transcript_reader._fresh_sessions
+
+    @pytest.mark.parametrize("source", ["resume", "compact", "", None])
+    def test_replayed_or_unknown_is_not_marked(
+        self, monitor: SessionMonitor, source: str | None
+    ) -> None:
+        monitor._note_session_start(self._event(source))
+        assert monitor._transcript_reader._fresh_sessions == set()
+
+    def test_other_events_are_ignored(self, monitor: SessionMonitor) -> None:
+        event = self._event("clear")
+        stop = HookEvent(
+            event_type="Stop",
+            window_key=event.window_key,
+            session_id=event.session_id,
+            data=event.data,
+            timestamp=0.0,
+        )
+        monitor._note_session_start(stop)
+        assert monitor._transcript_reader._fresh_sessions == set()

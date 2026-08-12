@@ -138,6 +138,23 @@ class TranscriptReader:
         self._file_generations = self._snapshot_file_generations()
         self._file_markers = self._snapshot_file_markers()
         self._startup_file_boundaries = self._snapshot_startup_boundaries()
+        self._fresh_sessions: set[str] = set()
+
+    def note_fresh_session(self, session_id: str) -> None:
+        """Mark a session whose transcript began under this process's watch.
+
+        Tracking normally starts at end-of-file, because a session ccgram meets
+        for the first time usually carries history nobody wants replayed into a
+        topic. A session that *started* while we were running carries none: its
+        transcript holds only what it has written since, so seeking past it
+        drops content rather than history.
+
+        Only the caller can tell the two apart — the hook's SessionStart says
+        whether the session is new or resumed — so this is a mark, not a guess
+        made from the file. Sessions we are never told about keep the old
+        end-of-file behaviour.
+        """
+        self._fresh_sessions.add(session_id)
 
     def _snapshot_file_ctimes(self) -> dict[str, int]:
         ctimes: dict[str, int] = {}
@@ -358,6 +375,7 @@ class TranscriptReader:
         """Remove all per-session state for a cleaned-up session."""
         self._state.remove_session(session_id)
         self._file_mtimes.pop(session_id, None)
+        self._fresh_sessions.discard(session_id)
         self._pending_tools.pop(session_id, None)
         self._file_generations.pop(session_id, None)
         self._file_ctimes.pop(session_id, None)
@@ -427,6 +445,90 @@ class TranscriptReader:
             return tracked
         return None
 
+    async def _begin_tracking(
+        self,
+        session_id: str,
+        file_path: Path,
+        window_id: str,
+        provider: Any,
+    ) -> TrackedSession | None:
+        """Start tracking a session; return it only when it must still be read.
+
+        A session met for the first time normally starts at end-of-file — its
+        history is not a topic's business — and this seeds the generation
+        caches so the next poll can tell growth from a rewrite. That path is
+        complete in itself, so it returns ``None``.
+
+        A session marked fresh is the exception: it began under our watch, so
+        it starts at offset 0 and is handed back to be read now, which is what
+        delivers its opening turn.
+        """
+        try:
+            st: Any = file_path.stat()
+            file_size, current_mtime = st.st_size, st.st_mtime
+        except OSError:
+            file_size = 0
+            current_mtime = 0.0
+            st = None
+            generation = None
+        else:
+            generation = (st.st_dev, st.st_ino)
+
+        # A session that started under our watch has written nothing we have a
+        # reason to skip, and whatever it wrote between its first line and this
+        # poll is exactly what seeking to the end would lose.
+        is_fresh = session_id in self._fresh_sessions
+        self._fresh_sessions.discard(session_id)
+
+        if is_fresh:
+            initial_offset = 0
+        elif provider.capabilities.supports_incremental_read:
+            initial_offset = file_size
+        else:
+            _, initial_offset = await asyncio.to_thread(
+                provider.read_transcript_file, str(file_path), 0
+            )
+
+        tracked = TrackedSession(
+            session_id=session_id,
+            file_path=str(file_path),
+            last_byte_offset=initial_offset,
+        )
+        self._state.update_session(tracked)
+
+        if is_fresh:
+            # The generation caches stay unseeded: the caller's read commits
+            # them from the stat it actually read, and seeding them here from
+            # an end-of-file stat we deliberately did not read would describe a
+            # file generation this session never consumed.
+            logger.info(
+                "Tracking new session %s from the start of its transcript",
+                session_id,
+            )
+            return tracked
+
+        self._file_mtimes[session_id] = current_mtime
+        if generation is not None and st is not None:
+            self._file_generations[session_id] = generation
+            self._file_ctimes[session_id] = st.st_ctime_ns
+            self._file_sizes[session_id] = st.st_size
+            self._file_prefixes[session_id] = (
+                st.st_size,
+                await asyncio.to_thread(_prefix_digest, file_path, st.st_size),
+            )
+        try:
+            marker = await asyncio.to_thread(
+                _tail_marker, file_path, tracked.last_byte_offset
+            )
+        except OSError:
+            pass
+        else:
+            self._file_markers[session_id] = (tracked.last_byte_offset, marker)
+        if provider.capabilities.supports_task_tracking and window_id:
+            await provider.seed_task_state(window_id, session_id, str(file_path))
+        logger.debug("Started tracking session: %s", session_id)
+        return None
+
     async def _process_session_file(
         self,
         session_id: str,
@@ -443,54 +545,11 @@ class TranscriptReader:
             tracked = self._adopt_tracking_for_file(session_id, file_path)
 
         if tracked is None:
-            try:
-                st = file_path.stat()
-                file_size, current_mtime = st.st_size, st.st_mtime
-            except OSError:
-                file_size = 0
-                current_mtime = 0.0
-                st = None
-                generation = None
-            else:
-                generation = (st.st_dev, st.st_ino)
-
-            if provider.capabilities.supports_incremental_read:
-                initial_offset = file_size
-            else:
-                _, initial_offset = await asyncio.to_thread(
-                    provider.read_transcript_file, str(file_path), 0
-                )
-
-            tracked = TrackedSession(
-                session_id=session_id,
-                file_path=str(file_path),
-                last_byte_offset=initial_offset,
+            tracked = await self._begin_tracking(
+                session_id, file_path, window_id, provider
             )
-            self._state.update_session(tracked)
-            self._file_mtimes[session_id] = current_mtime
-            if generation is not None and st is not None:
-                self._file_generations[session_id] = generation
-                self._file_ctimes[session_id] = st.st_ctime_ns
-                self._file_sizes[session_id] = st.st_size
-                self._file_prefixes[session_id] = (
-                    st.st_size,
-                    await asyncio.to_thread(_prefix_digest, file_path, st.st_size),
-                )
-            try:
-                marker = await asyncio.to_thread(
-                    _tail_marker, file_path, tracked.last_byte_offset
-                )
-            except OSError:
-                pass
-            else:
-                self._file_markers[session_id] = (
-                    tracked.last_byte_offset,
-                    marker,
-                )
-            if provider.capabilities.supports_task_tracking and window_id:
-                await provider.seed_task_state(window_id, session_id, str(file_path))
-            logger.debug("Started tracking session: %s", session_id)
-            return
+            if tracked is None:
+                return
 
         try:
             st = file_path.stat()
