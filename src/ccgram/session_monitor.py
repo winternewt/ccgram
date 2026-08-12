@@ -37,6 +37,7 @@ from .event_reader import read_new_events
 from .idle_tracker import IdleTracker
 from .monitor_state import MonitorState
 from .providers import get_provider_for_window, registry  # noqa: F401 (used by test patches)
+from .providers.base import HookEvent
 from .session_map import parse_session_map, read_session_map_raw, session_map_prefix
 from .session_lifecycle import session_lifecycle
 from .multiplexer import multiplexer as tmux_manager
@@ -64,6 +65,10 @@ _LoopError = (OSError, RuntimeError, json.JSONDecodeError, ValueError, TelegramE
 _BACKOFF_MIN = 2.0
 _BACKOFF_MAX = 30.0
 _MSG_PREVIEW_LENGTH = 80
+
+# SessionStart sources whose transcript starts empty. "resume" and "compact"
+# replay earlier turns into the new file, which a topic must not receive again.
+_FRESH_SESSION_SOURCES: frozenset[str] = frozenset({"startup", "clear"})
 
 logger = structlog.get_logger()
 
@@ -98,11 +103,6 @@ class SessionMonitor:
         self._new_window_callback: (
             Callable[[NewWindowEvent], Awaitable[None]] | None
         ) = None
-        # Lazy: providers.base imports HookEvent and gets imported back
-        # through tmux_manager → providers; keep at call site.
-        # Lazy: HookEvent pulled by hook dispatch path; defer until that path runs
-        from .providers.base import HookEvent
-
         self._hook_event_callback: Callable[[HookEvent], Awaitable[None]] | None = None
 
         self._idle_tracker = IdleTracker()
@@ -292,10 +292,26 @@ class SessionMonitor:
             self.state._dirty = True
 
         for event in events:
+            self._note_session_start(event)
             try:
                 await self._hook_event_callback(event)
             except _CallbackError:
                 logger.exception("Hook event callback error for %s", event.event_type)
+
+    def _note_session_start(self, event: HookEvent) -> None:
+        """Tell the reader which sessions began under our watch.
+
+        Read before the transcripts each cycle, so a session announced and
+        first read in the same cycle is already marked when tracking starts.
+        A source we do not recognise — an older hook, a provider that does not
+        report one — is left unmarked rather than assumed new: replaying a
+        resumed session's history into a topic is the worse failure.
+        """
+        if event.event_type != "SessionStart" or not event.session_id:
+            return
+        if event.data.get("source") not in _FRESH_SESSION_SOURCES:
+            return
+        self._transcript_reader.note_fresh_session(event.session_id)
 
     async def _load_current_session_map(
         self, raw: dict | None = None
