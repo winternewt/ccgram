@@ -294,46 +294,40 @@ class GeminiHookAdapter:
         )
 
 
+# Claude events whose whole payload of interest is string fields, copied as
+# given. "source" ("startup" | "clear" | "resume" | "compact") is what tells a
+# consumer whether a session's transcript is new or carries replayed history.
+_CLAUDE_STR_FIELDS: dict[str, tuple[str, ...]] = {
+    "Notification": ("tool_name", "message"),
+    "StopFailure": ("error", "error_details"),
+    "SessionEnd": ("reason",),
+    "SessionStart": ("source",),
+    "SubagentStart": ("subagent_id", "description", "name"),
+    "SubagentStop": ("subagent_id", "description", "name"),
+    "TeammateIdle": ("teammate_name", "team_name"),
+    "TaskCompleted": (
+        "task_id",
+        "task_subject",
+        "task_description",
+        "teammate_name",
+        "team_name",
+    ),
+}
+
+
 def _extract_claude_data(
     event_name: str, payload: dict[str, object]
 ) -> dict[str, JsonValue]:
-    if event_name == "Notification":
-        return {
-            "tool_name": _str_field(payload, "tool_name"),
-            "message": _str_field(payload, "message"),
-        }
     if event_name == "Stop":
+        # The one event with a non-string field.
         return {
             "stop_reason": _str_field(payload, "stop_reason"),
             "num_turns": _int_field(payload, "num_turns"),
         }
-    if event_name == "StopFailure":
-        return {
-            "error": _str_field(payload, "error"),
-            "error_details": _str_field(payload, "error_details"),
-        }
-    if event_name == "SessionEnd":
-        return {"reason": _str_field(payload, "reason")}
-    if event_name in {"SubagentStart", "SubagentStop"}:
-        return {
-            "subagent_id": _str_field(payload, "subagent_id"),
-            "description": _str_field(payload, "description"),
-            "name": _str_field(payload, "name"),
-        }
-    if event_name == "TeammateIdle":
-        return {
-            "teammate_name": _str_field(payload, "teammate_name"),
-            "team_name": _str_field(payload, "team_name"),
-        }
-    if event_name == "TaskCompleted":
-        return {
-            "task_id": _str_field(payload, "task_id"),
-            "task_subject": _str_field(payload, "task_subject"),
-            "task_description": _str_field(payload, "task_description"),
-            "teammate_name": _str_field(payload, "teammate_name"),
-            "team_name": _str_field(payload, "team_name"),
-        }
-    return {}
+    return {
+        field: _str_field(payload, field)
+        for field in _CLAUDE_STR_FIELDS.get(event_name, ())
+    }
 
 
 _ADAPTERS: dict[ProviderName, HookAdapter] = {
