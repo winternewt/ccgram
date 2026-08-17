@@ -38,6 +38,15 @@ RC_DEBOUNCE_SECONDS = 3.0
 # Consecutive topic probe failure threshold.
 MAX_PROBE_FAILURES = 3
 
+# How long a bound window may be absent from the listing before the poll calls
+# it dead, on backends that also push window death. Absence is ambiguous there:
+# an agent that publishes its session re-keys the window, and the id ccgram
+# holds stops resolving for the few seconds it takes the alias fold to catch
+# up. Death itself arrives by push and is not debounced, so this only delays
+# the backstop. Backends without a push signal keep reporting death on the
+# first miss, because the miss is all they will ever get.
+DEAD_WINDOW_GRACE_SECONDS = 8.0
+
 # Typing indicator throttle interval (seconds).
 TYPING_INTERVAL = 4.0
 
@@ -73,6 +82,7 @@ class WindowPollState:
     rc_active: bool = False
     rc_off_since: float | None = None
     last_rc_detected: bool = False
+    missing_since: float | None = None
 
 
 @dataclass

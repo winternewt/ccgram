@@ -16,8 +16,10 @@ coordinator imports nothing else.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
+from ....multiplexer import multiplexer
 from ....telegram_client import PTBTelegramClient
 from ...messaging_pipeline.message_queue import get_message_queue
 from ...recovery.transcript_discovery import discover_and_register_transcript
@@ -28,7 +30,12 @@ from ..polling_state import (
     terminal_poll_state,
     terminal_screen_buffer,
 )
-from ..polling_types import TickContext, TickDecision, is_shell_prompt
+from ..polling_types import (
+    DEAD_WINDOW_GRACE_SECONDS,
+    TickContext,
+    TickDecision,
+    is_shell_prompt,
+)
 from .apply import (
     _apply_active_transition,
     _apply_done_transition,
@@ -75,10 +82,23 @@ async def tick_window(
         return
 
     if window is None:
+        # A backend that pushes window death reports it directly, so absence
+        # from the listing is only a backstop here — and an ambiguous one,
+        # since a window that re-keys its identity also stops answering to the
+        # id ccgram holds. Give the alias fold its few seconds before burying
+        # a window that is merely being renamed.
+        if multiplexer.capabilities.supports_event_stream and not (
+            rt.lifecycle.death_is_confirmed(
+                window_id, time.monotonic(), DEAD_WINDOW_GRACE_SECONDS
+            )
+        ):
+            return
         await _handle_dead_window_notification(
             bot, user_id, thread_id, window_id, runtime=rt
         )
         return
+
+    rt.lifecycle.note_window_seen(window_id)
 
     await discover_and_register_transcript(
         window_id,

@@ -477,6 +477,22 @@ class TopicLifecycleStrategy:
         """Record that a dead notification was sent."""
         self._dead_notified.add((user_id, thread_id, window_id))
 
+    def death_is_confirmed(self, window_id: str, now: float, grace: float) -> bool:
+        """Answer whether a window absent from the listing counts as dead yet.
+
+        Starts the clock on the first miss and returns False until ``grace``
+        has passed, so a window that is only between identities is not buried
+        while the alias fold catches up. Any sighting clears the clock.
+        """
+        ws = self._poll_state.get_state(window_id)
+        if ws.missing_since is None:
+            ws.missing_since = now
+        return now - ws.missing_since >= grace
+
+    def note_window_seen(self, window_id: str) -> None:
+        """Clear the absence clock — the window answered to this id again."""
+        self._poll_state.get_state(window_id).missing_since = None
+
     def iter_topic_states(self) -> list[tuple[int, int, TopicPollState]]:
         """Return list of (user_id, thread_id, state) for all tracked topics."""
         return [(uid, tid, ts) for (uid, tid), ts in self._states.items()]
