@@ -14,6 +14,9 @@ from ccgram.handlers.polling.polling_state import (
     terminal_poll_state,
     terminal_screen_buffer,
 )
+from ccgram.handlers.polling.polling_types import (
+    DEAD_WINDOW_GRACE_SECONDS,
+)
 from ccgram.handlers.polling.window_tick import (
     _forward_pane_output,
     _handle_dead_window_notification,
@@ -163,6 +166,82 @@ class TestTickWindowDeadWindow:
 
         mock_tmux.kill_window.assert_not_awaited()
         mock_dead.assert_awaited_once()
+
+
+class TestTickWindowDeathGrace:
+    """A missing window is only ambiguous where death also arrives by push.
+
+    herdr re-keys a window when its agent publishes a session, so the id
+    ccgram holds stops resolving for a few seconds before the alias fold
+    repoints the binding. tmux has no such gap and no push signal, so the
+    first miss there is all the evidence there will ever be.
+    """
+
+    @staticmethod
+    def _push_backend():
+        mux = MagicMock()
+        mux.capabilities.supports_event_stream = True
+        return mux
+
+    async def test_first_miss_waits_for_the_grace_period(self):
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch.object(window_tick, "tmux_manager", self._push_backend()),
+            patch.object(
+                window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
+            ) as mock_dead,
+        ):
+            await tick_window(bot, 1, 100, "@0", None)
+            mock_dead.assert_not_called()
+        assert terminal_poll_state.get_state("@0").missing_since is not None
+
+    async def test_death_reported_once_the_grace_period_elapses(self):
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch.object(window_tick, "tmux_manager", self._push_backend()),
+            patch.object(
+                window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
+            ) as mock_dead,
+        ):
+            await tick_window(bot, 1, 100, "@0", None)
+            state = terminal_poll_state.get_state("@0")
+            state.missing_since -= DEAD_WINDOW_GRACE_SECONDS + 1
+            await tick_window(bot, 1, 100, "@0", None)
+            mock_dead.assert_called_once()
+
+    async def test_backend_without_push_dies_on_the_first_miss(self):
+        bot = AsyncMock(spec=Bot)
+        mux = MagicMock()
+        mux.capabilities.supports_event_stream = False
+        with (
+            patch.object(window_tick, "tmux_manager", mux),
+            patch.object(
+                window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
+            ) as mock_dead,
+        ):
+            await tick_window(bot, 1, 100, "@0", None)
+            mock_dead.assert_called_once()
+
+    async def test_a_sighting_clears_the_absence_clock(self):
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch.object(window_tick, "tmux_manager", self._push_backend()),
+            patch.object(
+                window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
+            ),
+            patch.object(
+                window_tick, "discover_and_register_transcript", new_callable=AsyncMock
+            ),
+            patch.object(window_tick, "_update_status", new_callable=AsyncMock),
+            patch.object(window_tick, "_scan_window_panes", new_callable=AsyncMock),
+            patch.object(
+                window_tick, "_maybe_check_passive_shell", new_callable=AsyncMock
+            ),
+        ):
+            await tick_window(bot, 1, 100, "@0", None)
+            assert terminal_poll_state.get_state("@0").missing_since is not None
+            await tick_window(bot, 1, 100, "@0", _make_window())
+            assert terminal_poll_state.get_state("@0").missing_since is None
 
 
 class TestTickWindowPendingQueue:
