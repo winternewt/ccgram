@@ -211,6 +211,48 @@ async def test_replacement_between_stat_and_open_retries_from_zero(tmp_path) -> 
     assert [message.text for message in messages] == ["new"]
 
 
+async def test_append_during_read_is_not_a_rewrite(tmp_path) -> None:
+    """The agent writing its next line mid-read must not replay the transcript."""
+    old = '{"type":"assistant","message":{"content":[{"type":"text","text":"old"}]}}\n'
+    unread = old.replace("old", "unread")
+    later = old.replace("old", "later")
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(old + unread)
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess",
+            file_path=str(session_file),
+            last_byte_offset=len(old.encode()),
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    original_read = reader._read_new_lines
+    appended = False
+
+    async def read_then_append(*args, **kwargs):
+        nonlocal appended
+        entries = await original_read(*args, **kwargs)
+        if not appended:
+            appended = True
+            with session_file.open("a") as handle:
+                handle.write(later)
+        return entries
+
+    messages = []
+    with patch.object(reader, "_read_new_lines", side_effect=read_then_append):
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+    # Only the line that was there when the read started; the one written
+    # during it is left for the next poll, not replayed along with the history.
+    assert [message.text for message in messages] == ["unread"]
+    tracked = state.get_session("sess")
+    assert tracked is not None
+    assert tracked.last_byte_offset == len((old + unread).encode())
+
+
 async def test_whole_file_rewrite_bypasses_unchanged_mtime(tmp_path) -> None:
     session_file = tmp_path / "transcript.json"
     session_file.write_text("old")

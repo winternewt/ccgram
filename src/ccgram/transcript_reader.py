@@ -307,7 +307,18 @@ class TranscriptReader:
                 after.st_dev,
                 after.st_ino,
             )
-            rewritten_in_place = before.st_ctime_ns != after.st_ctime_ns
+            # ctime moves for an append as well as for a rewrite, so it
+            # cannot carry the distinction alone: an agent writing its next
+            # line while we read would otherwise look like a file replaced
+            # under us, and the reset below would replay the transcript from
+            # byte 0 into a topic that already has it. A file that grew was
+            # appended to; one that did not may have been rewritten. A
+            # rewrite that also grew changes the bytes before the offset we
+            # read from, which the marker check catches.
+            rewritten_in_place = (
+                before.st_ctime_ns != after.st_ctime_ns
+                and after.st_size <= before.st_size
+            )
             marker_changed = False
             saved = self._file_markers.get(session_id) if check_marker else None
             if saved is not None and saved[0] == start_offset:
