@@ -47,6 +47,25 @@ it documents the seams the code introduces.
 PRs are deliberately not opened yet — upstream's process is to settle the
 approach on the issue first.
 
+### Round 2 — one issue, one branch, submitted in sequence
+
+Upstream also wants a PR to close exactly one issue *and* to change one thing,
+so the round-2 branches carry a single commit each and are cut from
+`upstream-main` at v4.6.0 rather than stacked. Issues are filed one at a time:
+the next one goes up once its predecessor is merged.
+
+| Issue | Covers | Branch (single fix, off v4.6.0) |
+|---|---|---|
+| [alexei-led/ccgram#169](https://github.com/alexei-led/ccgram/issues/169) | `/clear` re-keys a herdr session, so one agent gains a topic per reset | `fix/herdr-topic-fold-on-rekey` |
+| not filed yet | `/sync` cannot see two topics bound to one live window | `fix/sync-close-duplicate-topic` |
+| not filed yet | herdr `pane run` batches the newline, so a message sits unsent in the composer | `fix/herdr-send-text-then-enter` |
+
+#169 additionally notes, as explicitly out of scope, that a binding dropped
+without the topic being removed leaves a topic nothing can reach again — the
+Bot API cannot enumerate forum topics and `_rebind_existing_topic_by_name` only
+searches existing bindings. That one is ours to fix here first and file
+separately if it survives review.
+
 ---
 
 ## 1. A detected agent is invisible until it publishes a session
