@@ -48,6 +48,12 @@ class ParsedEntry:
     )
 
 
+# Shown in place of a compaction summary. The summary itself is the agent's
+# context, not a turn in the conversation, and relaying it costs six Telegram
+# messages; the user still needs to know the earlier turns are gone.
+COMPACT_NOTICE = "\U0001f5dc Context compacted \u2014 earlier turns are now a summary."
+
+
 @dataclass
 class PendingToolInfo:
     """Information about a pending tool_use waiting for its tool_result."""
@@ -114,6 +120,17 @@ class TranscriptParser:
     def is_user_message(data: dict) -> bool:
         """Check if this is a user message."""
         return data.get("type") == "user"
+
+    @staticmethod
+    def is_compact_summary(data: dict) -> bool:
+        """Check if this entry is the summary Claude writes when it compacts.
+
+        Claude Code records the compacted history as a ``user`` entry carrying
+        the whole summary — 20k characters in the observed case — and flags it
+        ``isCompactSummary``. It is context handed back to the agent, not
+        something the user said, so it is announced rather than relayed.
+        """
+        return bool(data.get("isCompactSummary"))
 
     @staticmethod
     def extract_text_only(content_list: list[Any]) -> str:
@@ -735,6 +752,17 @@ class TranscriptParser:
                 continue
 
             entry_timestamp = cls.get_timestamp(data)
+
+            if cls.is_compact_summary(data):
+                result.append(
+                    ParsedEntry(
+                        role="assistant",
+                        text=COMPACT_NOTICE,
+                        content_type="text",
+                        timestamp=entry_timestamp,
+                    )
+                )
+                continue
 
             message = data.get("message")
             if not isinstance(message, dict):

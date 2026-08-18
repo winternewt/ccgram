@@ -3,6 +3,7 @@ import pytest
 from ccgram.expandable_quote import EXPANDABLE_QUOTE_END as EXPQUOTE_END
 from ccgram.expandable_quote import EXPANDABLE_QUOTE_START as EXPQUOTE_START
 from ccgram.transcript_parser import (
+    COMPACT_NOTICE,
     ParsedMessage,
     TranscriptParser,
 )
@@ -821,3 +822,37 @@ class TestParseEntries:
         assert not pending2
         tr = next(e for e in result2 if e.content_type == "tool_result")
         assert tr.tool_use_id == "tb"
+
+
+class TestCompactSummary:
+    """A compaction summary is the agent's context, not a user turn."""
+
+    _SUMMARY = {
+        "type": "user",
+        "isCompactSummary": True,
+        "isVisibleInTranscriptOnly": True,
+        "timestamp": "2026-08-16T22:56:29.629Z",
+        "message": {
+            "role": "user",
+            "content": "This session is being continued from a previous "
+            + ("conversation. " * 2000),
+        },
+    }
+
+    def test_summary_is_announced_not_relayed(self):
+        entries, _ = TranscriptParser.parse_entries([self._SUMMARY], {})
+        assert [(e.role, e.text) for e in entries] == [("assistant", COMPACT_NOTICE)]
+
+    def test_notice_fits_one_telegram_message(self):
+        # The summary it replaces was 20k characters — six messages' worth.
+        assert len(self._SUMMARY["message"]["content"]) > 4096
+        assert len(COMPACT_NOTICE) < 4096
+
+    def test_ordinary_user_text_is_still_relayed(self):
+        plain = {
+            "type": "user",
+            "timestamp": "2026-08-16T22:57:00.000Z",
+            "message": {"role": "user", "content": "carry on"},
+        }
+        entries, _ = TranscriptParser.parse_entries([plain], {})
+        assert [(e.role, e.text) for e in entries] == [("user", "carry on")]
