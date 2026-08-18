@@ -354,6 +354,8 @@ async def handle_interactive_ui(
     window_id: str,
     thread_id: int | None = None,
     pane_id: str | None = None,
+    *,
+    detected: tuple[str, str] | None = None,
 ) -> bool:
     """Capture terminal and send interactive UI content to user.
 
@@ -364,8 +366,17 @@ async def handle_interactive_ui(
     When *pane_id* is given, captures and targets a specific pane (for
     multi-pane windows such as agent teams).  The pane context is shown
     in the message and the keyboard routes responses to that pane.
+
+    *detected* is the ``(ui_name, text)`` a caller already resolved. The
+    status poll resolves it through the pyte screen buffer; without it
+    this function would take a second capture and run a weaker detector
+    over it, and whenever the two disagree the poll detects a prompt every
+    tick and delivers nothing — a topic left waiting on a dialog with no
+    way to answer it. Pass what was detected instead of re-deriving it.
     """
-    captured = await _capture_interactive_content(window_id, pane_id=pane_id)
+    captured = detected or await _capture_interactive_content(
+        window_id, pane_id=pane_id
+    )
     if not captured:
         return False
 

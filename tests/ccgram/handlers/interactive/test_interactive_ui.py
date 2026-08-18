@@ -308,3 +308,88 @@ class TestTransientRetry:
 
         assert ok is False
         assert bot.send_message.call_count == 2
+
+
+class TestPreResolvedDetection:
+    """The poll hands over what it detected instead of it being re-derived.
+
+    The poll resolves the prompt through the pyte screen buffer; a second
+    capture parsed by a second detector can disagree, and when it does the
+    poll detects the prompt on every tick and never sends it — a topic left
+    waiting on a dialog with no way to answer.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_state(self):  # type: ignore[no-untyped-def]
+        from ccgram.handlers.interactive.interactive_ui import (
+            _interactive_mode,
+            _interactive_msgs,
+            _send_cooldowns,
+        )
+
+        _interactive_mode.clear()
+        _interactive_msgs.clear()
+        _send_cooldowns.clear()
+        yield
+        _interactive_mode.clear()
+        _interactive_msgs.clear()
+        _send_cooldowns.clear()
+
+    async def test_prompt_is_sent_when_a_second_capture_would_miss_it(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from ccgram.handlers.interactive.interactive_ui import (
+            get_interactive_window,
+            handle_interactive_ui,
+        )
+
+        mock_bot = AsyncMock()
+        sent = MagicMock()
+        sent.message_id = 7
+        mock_bot.send_message.return_value = sent
+
+        with (
+            patch(
+                "ccgram.handlers.interactive.interactive_ui._capture_interactive_content",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as recapture,
+            patch(
+                "ccgram.handlers.interactive.interactive_ui.thread_router"
+            ) as mock_sm,
+            patch(
+                "ccgram.handlers.interactive.interactive_ui.rate_limit_send",
+                new_callable=AsyncMock,
+            ),
+        ):
+            mock_sm.resolve_chat_id.return_value = -999
+            ok = await handle_interactive_ui(
+                mock_bot,
+                100,
+                "@3",
+                thread_id=55,
+                detected=("PermissionPrompt", "Do you want to proceed?"),
+            )
+
+        assert ok is True
+        recapture.assert_not_called()
+        assert (
+            "Do you want to proceed?" in mock_bot.send_message.call_args.kwargs["text"]
+        )
+        assert get_interactive_window(100, 55) == "@3"
+
+    async def test_no_detection_still_captures_for_itself(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from ccgram.handlers.interactive.interactive_ui import handle_interactive_ui
+
+        mock_bot = AsyncMock()
+        with patch(
+            "ccgram.handlers.interactive.interactive_ui._capture_interactive_content",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as recapture:
+            assert (
+                await handle_interactive_ui(mock_bot, 100, "@3", thread_id=55) is False
+            )
+        recapture.assert_called_once()
