@@ -57,6 +57,13 @@ the next one goes up once its predecessor is merged.
 | Issue | Covers | Branch (single fix, off v4.6.0) |
 |---|---|---|
 | [alexei-led/ccgram#169](https://github.com/alexei-led/ccgram/issues/169) | `/clear` re-keys a herdr session, so one agent gains a topic per reset | `fix/herdr-topic-fold-on-rekey` |
+
+#169's branch is open as PR [#170] and does **not** close the issue as it
+stands: the spam still reproduces on `main` with both of its commits in
+place, because the fold runs after the session-map delta is read (§2b). The
+ordering commit on this fork's `main` is the third the branch needs.
+
+[#170]: https://github.com/alexei-led/ccgram/pull/170
 | not filed yet | `/sync` cannot see two topics bound to one live window | `fix/sync-close-duplicate-topic` |
 | not filed yet | herdr `pane run` batches the newline, so a message sits unsent in the composer | `fix/herdr-send-text-then-enter` |
 
@@ -173,6 +180,65 @@ had captured seconds earlier.
 **Rejected alternative.** Making identity always terminal-derived. It works —
 it was verified live — but it discards the "a session keeps its identity when
 it moves panes" guarantee that upstream tests assert, and breaks 20 tests.
+
+---
+
+## 2b. The fold is correct and still one step too late
+
+*Found after §2 shipped, reproducing on `main` with the fold in place. It is
+the other half of upstream #169, not a separate defect.*
+
+**Observed.** `/clear` in a bound topic spawns a second topic for the same
+agent. Creating a session from the directory browser does the same: a ghost
+topic named after the working directory (`bob`) appears beside the topic the
+flow renamed and bound. `state.json` carries the fingerprint — 23 window
+states and 17 display names for three live terminals, and one display name is
+the bare `bob` rather than the `bob ▸ 1` label the live listing produces.
+
+**Expected.** One agent, one topic, across a session reset.
+
+**Root cause.** An ordering defect in `_monitor_loop`, not in the fold.
+`session_map.json` is keyed by the same session-derived id, so a re-key is not
+"this window's session changed" — the key itself is replaced:
+
+```
+old_windows - current_windows → A retired    (SessionLifecycle.reconcile)
+current_windows - old_windows → B is "new"   → NewWindowEvent → topic
+```
+
+`_detect_and_cleanup_changes` ran *before* `reconcile_window_aliases`, so at
+the moment the delta was read nothing yet knew B superseded A. The fold then
+did exactly its job one step later — moving the original topic onto B — which
+is why the leftover looks like a *ghost*: the topic the user was using follows
+the agent, and the one the monitor just asked for is orphaned but not deleted.
+The Bot API cannot enumerate forum topics, so it stays visible forever.
+
+The creation flow fails the same way for a different reason. herdr's
+`_await_created_session_target` gives up after 5s and binds the pane's
+terminal-derived target; on this box Claude reliably needs longer, so the
+topic is bound to **A** while the hook later registers **B**. Same delta, same
+adoption, same ghost — which is why the second repro is not racy either.
+
+**Proof.** `events.jsonl` at 18:43:04 records `SessionEnd(reason: "clear")` for
+`ba69bec3` and `SessionStart(source: "clear")` for `e4328605` in the same
+second, each under its own target id, and every `session_map.json` key matches
+the digest of its own `session_id` — the hook never lags into the old key, it
+mints a new one. The regression test
+(`test_rekeyed_window_folds_before_its_map_delta_is_read`) fails on the old
+order with `Window 'A' deleted` logged *before* `Reconciled superseded window
+id A -> B`, and both halves of the fix are load-bearing: restoring the old
+order alone fails it again.
+
+**Fix.** Consult the live listing first. `list_windows_for_reconciliation` and
+`reconcile_window_aliases` now run before `_detect_and_cleanup_changes` —
+which is what the comment at that site already claimed ("before anything keys
+off these ids") — and the delta path skips a window that already has a topic,
+the way `_emit_unbound_window_events` and `_emit_known_unbound_window_events`
+both do.
+
+**Not fixed here.** When the listing is unavailable the fold cannot run and the
+delta is still adopted unreconciled. It logs a warning, and adoption would only
+have to wait one cycle, but deciding to defer it is a separate change.
 
 ---
 
