@@ -34,7 +34,7 @@ from ccgram.terminal_parser import (
     format_status_display,
     parse_status_block,
 )
-from ccgram.transcript_parser import TranscriptParser
+from ccgram.transcript_parser import COMPACT_NOTICE, TranscriptParser
 
 _log = structlog.get_logger(__name__)
 
@@ -237,6 +237,13 @@ class ClaudeProvider:
         raw_role = entry.get("type", "assistant")
         if raw_role not in ("user", "assistant"):
             return None
+        if TranscriptParser.is_compact_summary(entry):
+            return AgentMessage(
+                text=COMPACT_NOTICE,
+                role="assistant",
+                content_type="text",
+                timestamp=TranscriptParser.get_timestamp(entry),
+            )
         parsed = TranscriptParser.parse_message(entry)
         if parsed is None or not parsed.text:
             return None
