@@ -148,6 +148,15 @@ _CALL_TIMEOUT_SECONDS = 8.0
 _CREATED_SESSION_DISCOVERY_TIMEOUT_SECONDS = 5.0
 _CREATED_SESSION_POLL_INTERVAL_SECONDS = 0.1
 
+# Gap between writing text and pressing Enter (seconds). An agent TUI reads an
+# Enter that arrives in the same input batch as the text as a newline inside
+# that text, not as submit; the tmux backend takes the same precaution.
+_ENTER_DELAY_SECONDS = 0.5
+
+# Gap after a leading "!" so the TUI can switch to bash mode before the command
+# body arrives.
+_BASH_MODE_DELAY_SECONDS = 1.0
+
 # Event-stream reconnect backoff (seconds): exponential, capped.
 _STREAM_BACKOFF_BASE = 1.0
 _STREAM_BACKOFF_MAX = 30.0
@@ -926,12 +935,13 @@ class HerdrManager:
         literal: bool = True,
         raw: bool = False,
     ) -> bool:
-        del raw
         try:
             record = await self.guard_session_target(window_id)
         except HerdrError:
             return False
-        ok = await self._send_to(record.pane_id, text, enter=enter, literal=literal)
+        ok = await self._send_to(
+            record.pane_id, text, enter=enter, literal=literal, raw=raw
+        )
         if not ok:
             await self._after_action_failure(window_id)
         return ok
@@ -952,7 +962,7 @@ class HerdrManager:
         return await self.send(window_id, text, enter=enter, literal=literal)
 
     async def _send_to(
-        self, pane_id: str, text: str, *, enter: bool, literal: bool
+        self, pane_id: str, text: str, *, enter: bool, literal: bool, raw: bool = False
     ) -> bool:
         if not literal:
             keys = [_KEY_ALIASES.get(tok, tok) for tok in text.split() if tok]
@@ -961,9 +971,43 @@ class HerdrManager:
             return bool(keys) and await self._call_ok(
                 ["pane", "send-keys", pane_id, *keys]
             )
-        return await self._call_ok(
-            ["pane", "run" if enter else "send-text", pane_id, text]
-        )
+        if not enter:
+            return await self._call_ok(["pane", "send-text", pane_id, text])
+        if raw:
+            # A plain shell wants the command and its newline in one write.
+            return await self._call_ok(["pane", "run", pane_id, text])
+        return await self._send_text_then_enter(pane_id, text)
+
+    async def _send_text_then_enter(self, pane_id: str, text: str) -> bool:
+        """Write the text, pause, then press Enter as a separate key.
+
+        ``pane run`` delivers the text and its newline in one write. An agent
+        TUI that batches its input reads that newline as part of the text
+        rather than as submit: Claude Code collapses a multi-line arrival into
+        a paste placeholder and leaves it sitting in the composer, so the
+        message reaches the terminal but never reaches the agent. The gap is
+        the same precaution the tmux backend takes in
+        ``_send_literal_then_enter``.
+
+        A leading ``!`` is written on its own first so the TUI can switch to
+        bash mode before the command body arrives — pasted in one piece it is
+        just a prompt that starts with an exclamation mark.
+        """
+        body = text
+        if text.startswith("!"):
+            if not await self._call_ok(["pane", "send-text", pane_id, "!"]):
+                return False
+            body = text[1:]
+            if not body:
+                return await self._press_enter(pane_id)
+            await asyncio.sleep(_BASH_MODE_DELAY_SECONDS)
+        if not await self._call_ok(["pane", "send-text", pane_id, body]):
+            return False
+        return await self._press_enter(pane_id)
+
+    async def _press_enter(self, pane_id: str) -> bool:
+        await asyncio.sleep(_ENTER_DELAY_SECONDS)
+        return await self._call_ok(["pane", "send-keys", pane_id, "Enter"])
 
     async def kill_window(self, window_id: str) -> bool:
         try:

@@ -458,13 +458,52 @@ async def test_send_variants_guard_then_dispatch_to_live_pane() -> None:
     assert await mux.send(_target(), "hello")
     assert await mux.send(_target(), "partial", enter=False)
     assert await mux.send(_target(), "C-c Up", literal=False)
+    assert await mux.send(_target(), "ls -la", raw=True)
     assert fake.calls == [
         ["agent", "list"],
-        ["pane", "run", "w7:p4", "hello"],
+        ["pane", "send-text", "w7:p4", "hello"],
+        ["pane", "send-keys", "w7:p4", "Enter"],
         ["agent", "list"],
         ["pane", "send-text", "w7:p4", "partial"],
         ["agent", "list"],
         ["pane", "send-keys", "w7:p4", "C-c", "Up", "Enter"],
+        ["agent", "list"],
+        ["pane", "run", "w7:p4", "ls -la"],
+    ]
+
+
+async def test_agent_send_never_batches_enter_with_the_text() -> None:
+    """A TUI reads an Enter arriving with the text as a newline, not submit.
+
+    ``pane run`` writes both in one go, which is how a pasted message ends up
+    sitting in Claude Code's composer as a paste placeholder.
+    """
+    fake = (
+        _live_fake(_agent(pane_id="w7:p4"))
+        .on("pane", "run", out=_result(type="ok"))
+        .on("pane", "send-text", out=_result(type="ok"))
+        .on("pane", "send-keys", out=_result(type="ok"))
+    )
+    assert await _manager(fake).send(_target(), "first line\nsecond line")
+    assert ["pane", "run", "w7:p4", "first line\nsecond line"] not in fake.calls
+    assert fake.calls[1:] == [
+        ["pane", "send-text", "w7:p4", "first line\nsecond line"],
+        ["pane", "send-keys", "w7:p4", "Enter"],
+    ]
+
+
+async def test_bash_prefix_reaches_the_tui_before_the_command_body() -> None:
+    """``!ls`` pasted whole is a prompt; the ``!`` must land on its own."""
+    fake = (
+        _live_fake(_agent(pane_id="w7:p4"))
+        .on("pane", "send-text", out=_result(type="ok"))
+        .on("pane", "send-keys", out=_result(type="ok"))
+    )
+    assert await _manager(fake).send(_target(), "!ls -la")
+    assert fake.calls[1:] == [
+        ["pane", "send-text", "w7:p4", "!"],
+        ["pane", "send-text", "w7:p4", "ls -la"],
+        ["pane", "send-keys", "w7:p4", "Enter"],
     ]
 
 
@@ -673,11 +712,13 @@ async def test_raw_pane_helpers_cannot_bypass_target_guard() -> None:
 
 
 async def test_action_error_refreshes_guard_without_retargeting() -> None:
-    fake = _live_fake(_agent(pane_id="w2:p1")).on("pane", "run", rc=1, err="closed")
+    fake = _live_fake(_agent(pane_id="w2:p1")).on(
+        "pane", "send-text", rc=1, err="closed"
+    )
     assert not await _manager(fake).send(_target(), "hello")
     assert fake.calls == [
         ["agent", "list"],
-        ["pane", "run", "w2:p1", "hello"],
+        ["pane", "send-text", "w2:p1", "hello"],
         ["agent", "list"],
     ]
 
@@ -705,7 +746,7 @@ async def test_post_guard_dispatch_race_never_retargets_another_pane() -> None:
     assert not await HerdrManager(runner=runner).send(_target(), "hello")
     assert runner.calls == [
         ["agent", "list"],
-        ["pane", "run", "w2:p1", "hello"],
+        ["pane", "send-text", "w2:p1", "hello"],
         ["agent", "list"],
     ]
     assert not any(
