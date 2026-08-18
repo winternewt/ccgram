@@ -615,8 +615,16 @@ class HerdrManager:
         would alias one live agent onto its live sibling, so a lookup for
         either resolves to the other: ``kill_window`` would close the wrong
         pane and a tab close would be reported against the wrong target.
+
+        For the same reason a superseded target is dropped from the aliases
+        for as long as Herdr keeps reporting it. A session resumed onto its
+        previous id in another terminal is live again, and the lineage that
+        recorded it superseded is only stale: publishing it would make the
+        guard match both its own record and the one claiming to have replaced
+        it, and every action on the resumed topic would fail as ambiguous.
         """
         self._prune_session_lineage(records)
+        live_targets = {record.target_id for record in records}
         targets_per_terminal: dict[str, set[str]] = {}
         for record in records:
             if record.terminal_id and record.composite.kind != "terminal":
@@ -638,6 +646,7 @@ class HerdrManager:
                 for target_id in aliases
                 if target_id != record.target_id
                 and target_id not in record.alias_target_ids
+                and target_id not in live_targets
             )
             if not extra:
                 updated.append(record)

@@ -1397,3 +1397,40 @@ async def test_provisional_target_is_dropped_once_its_pane_is_gone(
 
     with pytest.raises(HerdrUnresolvedTargetError):
         await manager.guard_session_target(target.target_id)
+
+
+async def test_a_resumed_session_is_never_published_as_superseded() -> None:
+    """A target Herdr reports again has not been superseded by anything.
+
+    ``claude --resume`` onto the previous session id in a fresh terminal makes
+    that target live a second time, while the lineage of the terminal it left
+    still records it superseded. Publishing the alias would make the guard
+    match the resumed session's own record *and* the one that replaced it, so
+    every action on the resumed topic would fail as ambiguous.
+    """
+    runner = _SnapshotSequence(
+        _live_fake(_agent(value="session-a")),
+        _live_fake(_agent(value="session-b")),
+        _live_fake(
+            _agent(value="session-b"),
+            _agent(
+                pane_id="w3:p1",
+                tab_id="w3:t1",
+                workspace_id="w3",
+                value="session-a",
+                terminal_id="term-b",
+            ),
+        ),
+    )
+    manager = HerdrManager(socket_path="/tmp/herdr.sock", runner=runner)
+
+    await manager.list_windows()
+    runner.advance()
+    after_rekey = {w.window_id: w for w in await manager.list_windows()}
+    assert _target("session-a") in after_rekey[_target("session-b")].alias_window_ids
+
+    runner.advance()
+    windows = {w.window_id: w for w in await manager.list_windows()}
+    assert _target("session-a") not in windows[_target("session-b")].alias_window_ids
+    resumed = await manager.find_window_by_id(_target("session-a"))
+    assert resumed is not None and resumed.window_id == _target("session-a")
