@@ -123,6 +123,23 @@ def _use_colors(stream: object) -> bool:
     return bool(isatty and isatty())
 
 
+class _NoTraceback(logging.Filter):
+    """Keep a third-party log record's message, drop its stack trace.
+
+    PTB's rate limiter gives up after ``max_retries`` with
+    ``_LOGGER.exception(...)`` and re-raises, so every exhausted retry prints a
+    30-line traceback. The exception itself is handled — every send site in
+    ``messaging_pipeline.message_sender`` catches ``RetryAfter`` — and the stack
+    says nothing the message does not. The one-line message is real signal about
+    sustained over-rate sending, so it stays.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.exc_info = None
+        record.exc_text = None
+        return True
+
+
 def _log_level_styles() -> dict[str, str]:
     """Per-level colors so anomalies stand out and routine debug recedes.
 
@@ -201,6 +218,8 @@ def setup_logging(log_level: str) -> None:
     logging.getLogger("ccgram").setLevel(numeric_level)
     for name in ("httpx", "httpcore", "telegram.ext"):
         logging.getLogger(name).setLevel(logging.WARNING)
+    # Logged at ERROR, so the WARNING level above does not reach it.
+    logging.getLogger("telegram.ext.AIORateLimiter").addFilter(_NoTraceback())
 
 
 def _ensure_tmux_session(auto_detected: bool) -> None:
