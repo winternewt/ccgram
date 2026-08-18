@@ -2447,7 +2447,15 @@ class TestUpdateStatusMessage:
         bot = AsyncMock(spec=Bot)
         with _tick_env(pyte_result=_INTERACTIVE_STATUS, capture="Allow?\nEsc\n") as env:
             await _update_status(bot, 1, "@0", thread_id=42)
-        _assert_handle_called_once_with_client(env.handle_ui, bot, 1, "@0", 42)
+        # The poll hands over what it detected; the callee must not re-derive it.
+        _assert_handle_called_once_with_client(
+            env.handle_ui,
+            bot,
+            1,
+            "@0",
+            42,
+            detected=("PermissionPrompt", "Allow?", False),
+        )
         env.enqueue.assert_not_called()
 
 
@@ -2476,7 +2484,14 @@ class TestCheckInteractiveOnly:
         assert kwargs.get("rows") == 24
         assert kwargs.get("parse_claude_chrome") is True
         env.set_interactive_mode.assert_called_once_with(1, "@0", 42)
-        _assert_handle_called_once_with_client(env.handle_ui, bot, 1, "@0", 42)
+        _assert_handle_called_once_with_client(
+            env.handle_ui,
+            bot,
+            1,
+            "@0",
+            42,
+            detected=("PermissionPrompt", "Allow?", False),
+        )
 
     async def test_clears_interactive_mode_on_handle_failure(self) -> None:
         bot = AsyncMock(spec=Bot)
@@ -2544,7 +2559,14 @@ class TestCheckInteractiveOnly:
         provider.parse_terminal_status.assert_called_once_with(
             "Allow?\nEsc\n", pane_title=expected_title
         )
-        _assert_handle_called_once_with_client(env.handle_ui, bot, 1, "@0", 42)
+        _assert_handle_called_once_with_client(
+            env.handle_ui,
+            bot,
+            1,
+            "@0",
+            42,
+            detected=("PermissionPrompt", "Allow?", False),
+        )
         if uses_pane_title:
             env.observe_tmux.get_pane_title.assert_called_once_with("@0")
         else:
