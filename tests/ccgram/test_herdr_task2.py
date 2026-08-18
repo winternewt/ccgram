@@ -44,7 +44,11 @@ async def test_send_guards_target_and_uses_matched_pane() -> None:
         return 0, "", ""
 
     assert await HerdrManager(runner=runner).send(target, "hello")
-    assert calls == [["agent", "list"], ["pane", "run", "w7:p4", "hello"]]
+    assert calls == [
+        ["agent", "list"],
+        ["pane", "send-text", "w7:p4", "hello"],
+        ["pane", "send-keys", "w7:p4", "Enter"],
+    ]
 
 
 async def test_raw_pane_operations_are_rejected_without_dispatch() -> None:
