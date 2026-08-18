@@ -58,10 +58,11 @@ the next one goes up once its predecessor is merged.
 |---|---|---|
 | [alexei-led/ccgram#169](https://github.com/alexei-led/ccgram/issues/169) | `/clear` re-keys a herdr session, so one agent gains a topic per reset | `fix/herdr-topic-fold-on-rekey` |
 
-#169's branch is open as PR [#170] and does **not** close the issue as it
-stands: the spam still reproduces on `main` with both of its commits in
-place, because the fold runs after the session-map delta is read (§2b). The
-ordering commit on this fork's `main` is the third the branch needs.
+#169's branch is open as PR [#170]. Its first two commits halve the symptom
+rather than ending it — one extra topic per `/clear` instead of two — because
+the fold runs after the session-map delta is read (§2b). The ordering commit is
+the third the branch carries, and it closes the issue as filed; no separate
+issue is owed for it.
 
 [#170]: https://github.com/alexei-led/ccgram/pull/170
 | not filed yet | `/sync` cannot see two topics bound to one live window | `fix/sync-close-duplicate-topic` |
@@ -185,11 +186,13 @@ it moves panes" guarantee that upstream tests assert, and breaks 20 tests.
 
 ## 2b. The fold is correct and still one step too late
 
-*Found after §2 shipped, reproducing on `main` with the fold in place. It is
-the other half of upstream #169, not a separate defect.*
+*The other half of §2 and of upstream #169 — not a second defect. The symptom
+never changed shape: one `/clear` spawned two extra topics from the start, §2's
+fold removed one of them, and this removes the other.*
 
-**Observed.** `/clear` in a bound topic spawns a second topic for the same
-agent. Creating a session from the directory browser does the same: a ghost
+**Observed.** `/clear` in a bound topic still spawns one extra topic for the
+same agent — down from two before §2's fold shipped, which is the same defect
+counted down, not a new one. Creating a session from the directory browser does the same: a ghost
 topic named after the working directory (`bob`) appears beside the topic the
 flow renamed and bound. `state.json` carries the fingerprint — 23 window
 states and 17 display names for three live terminals, and one display name is
