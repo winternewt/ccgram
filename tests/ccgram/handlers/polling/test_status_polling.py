@@ -2764,7 +2764,9 @@ class TestUpdateStatusMessageEdgeCases:
             mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
             mock_tm.capture_pane = AsyncMock(return_value="Allow?\nEsc\n")
             await update_status_message(bot, 1, "@0", thread_id=42)
-        _assert_handle_called_once_with_client(mock_handle, bot, 1, "@0", 42)
+        _assert_handle_called_once_with_client(
+            mock_handle, bot, 1, "@0", 42, detected=("PermissionPrompt", "Allow?")
+        )
 
 
 @pytest.mark.usefixtures("_reset_pyte")
@@ -2818,7 +2820,9 @@ class TestCheckInteractiveOnly:
         assert kwargs.get("rows") == 24
         assert kwargs.get("parse_claude_chrome") is True
         mock_set.assert_called_once_with(1, "@0", 42)
-        _assert_handle_called_once_with_client(mock_handle, bot, 1, "@0", 42)
+        _assert_handle_called_once_with_client(
+            mock_handle, bot, 1, "@0", 42, detected=("PermissionPrompt", "Allow?")
+        )
 
     async def test_clears_interactive_mode_on_handle_failure(self) -> None:
         from ccgram.handlers.polling.window_tick import _check_interactive_only
@@ -3019,6 +3023,8 @@ class TestCheckInteractiveOnly:
         mock_provider.parse_terminal_status.assert_called_once_with(
             "Allow?\nEsc\n", pane_title=expected_title
         )
-        _assert_handle_called_once_with_client(mock_handle, bot, 1, "@0", 42)
+        _assert_handle_called_once_with_client(
+            mock_handle, bot, 1, "@0", 42, detected=("PermissionPrompt", "Allow?")
+        )
         if uses_pane_title:
             observe_tm.get_pane_title.assert_called_once_with("@0")

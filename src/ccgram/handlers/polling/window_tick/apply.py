@@ -63,7 +63,7 @@ from .observe import _check_vim_insert, _resolve_status, build_context
 if TYPE_CHECKING:
     from telegram import Bot
 
-    from ....providers.base import AgentProvider
+    from ....providers.base import AgentProvider, StatusUpdate
     from ....multiplexer.base import WindowRef as TmuxWindow
     from ..polling_runtime import PollingRuntime
 
@@ -245,6 +245,15 @@ async def _notify_pane_lifecycle(
 # ── Interactive-only check ───────────────────────────────────────────────
 
 
+def _detected_ui(status: "StatusUpdate") -> tuple[str, str] | None:
+    """Return the poll's own detection, for handing to ``handle_interactive_ui``.
+
+    None when the status carries no ``ui_type``, which leaves the callee to
+    capture and detect for itself exactly as before.
+    """
+    return (status.ui_type, status.raw_text) if status.ui_type else None
+
+
 async def _check_interactive_only(
     bot: "Bot",
     user_id: int,
@@ -270,7 +279,11 @@ async def _check_interactive_only(
     if status is not None and status.is_interactive:
         set_interactive_mode(user_id, window_id, thread_id)
         handled = await handle_interactive_ui(
-            PTBTelegramClient(bot), user_id, window_id, thread_id
+            PTBTelegramClient(bot),
+            user_id,
+            window_id,
+            thread_id,
+            detected=_detected_ui(status),
         )
         if not handled:
             clear_interactive_mode(user_id, thread_id)
@@ -560,7 +573,9 @@ async def _update_status(
         await clear_interactive_msg(user_id, client, thread_id)
 
     if should_check_new_ui and status is not None and status.is_interactive:
-        await handle_interactive_ui(client, user_id, window_id, thread_id)
+        await handle_interactive_ui(
+            client, user_id, window_id, thread_id, detected=_detected_ui(status)
+        )
         return
 
     ctx = build_context(window_id, w, status, runtime=runtime)
