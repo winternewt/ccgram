@@ -273,6 +273,7 @@ class TranscriptReader:
         previous_size = self._file_sizes.get(session_id)
         previous_prefix = self._file_prefixes.get(session_id)
         prefix_changed = False
+        compared_content = False
         if previous_prefix is not None:
             try:
                 prefix_changed = (
@@ -283,15 +284,24 @@ class TranscriptReader:
                 )
             except OSError:
                 prefix_changed = False
+            else:
+                compared_content = True
+        # ctime moves for a metadata-only touch as much as for a rewrite —
+        # Claude Code stamps a transcript's times long after its last entry —
+        # so on its own it cannot tell one from the other, and calling a touch
+        # a rewrite replays the whole file into the topic. Where the digest
+        # above compared the bytes already consumed it has answered the
+        # question; ctime only stands in when there was no baseline to compare.
+        touched_without_growing = (
+            previous_ctime is not None
+            and previous_ctime != st.st_ctime_ns
+            and previous_size is not None
+            and st.st_size <= previous_size
+        )
         changed = (
             changed
             or prefix_changed
-            or (
-                previous_ctime is not None
-                and previous_ctime != st.st_ctime_ns
-                and previous_size is not None
-                and st.st_size <= previous_size
-            )
+            or (touched_without_growing and not compared_content)
         )
         changed = changed or st.st_size < tracked.last_byte_offset
         if not changed and check_marker:

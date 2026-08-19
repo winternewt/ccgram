@@ -1,11 +1,13 @@
 """Tests for transcript reader offset handling."""
 
+import asyncio
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from ccgram.idle_tracker import IdleTracker
 from ccgram.monitor_state import MonitorState, TrackedSession
+from ccgram.providers import registry
 from ccgram.transcript_reader import TranscriptReader, _StableRead
 
 
@@ -251,6 +253,53 @@ async def test_append_during_read_is_not_a_rewrite(tmp_path) -> None:
     tracked = state.get_session("sess")
     assert tracked is not None
     assert tracked.last_byte_offset == len((old + unread).encode())
+
+
+async def test_metadata_touch_is_not_a_rewrite(tmp_path) -> None:
+    """Stamping a consumed transcript's times must not replay it into a topic."""
+    body = (
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"one"}]}}\n'
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"two"}]}}\n'
+    )
+    session_file = tmp_path / "transcript.jsonl"
+    session_file.write_text(body)
+    state = MonitorState(state_file=tmp_path / "monitor_state.json")
+    state.update_session(
+        TrackedSession(
+            session_id="sess", file_path=str(session_file), last_byte_offset=0
+        )
+    )
+    reader = TranscriptReader(state, IdleTracker())
+    delivered: list = []
+    again: list = []
+    # Pin the provider: resolution is cached per window id, so which one a bare
+    # "@1" resolves to otherwise depends on what ran before this test.
+    with patch(
+        "ccgram.transcript_reader._resolve_provider_for_file",
+        return_value=registry.get("claude"),
+    ):
+        await reader._process_session_file(
+            "sess", session_file, delivered, window_id="@1"
+        )
+
+        # Same bytes, same size, later times — Claude Code stamps a transcript
+        # whose last entry it wrote hours earlier. The sleep buys a distinct
+        # ctime: the kernel stamps file times from a coarse clock, so a touch
+        # in the same tick as the read above would not move ctime at all.
+        await asyncio.sleep(0.05)
+        stat = session_file.stat()
+        os.utime(
+            session_file,
+            ns=(stat.st_atime_ns + 1_000_000_000, stat.st_mtime_ns + 1_000_000_000),
+        )
+
+        await reader._process_session_file("sess", session_file, again, window_id="@1")
+
+    assert [message.text for message in delivered] == ["one", "two"]
+    assert again == []
+    tracked = state.get_session("sess")
+    assert tracked is not None
+    assert tracked.last_byte_offset == len(body.encode())
 
 
 async def test_whole_file_rewrite_bypasses_unchanged_mtime(tmp_path) -> None:
