@@ -68,6 +68,7 @@ issue is owed for it.
 | not filed yet | `/sync` cannot see two topics bound to one live window | `fix/sync-close-duplicate-topic` |
 | not filed yet | herdr `pane run` batches the newline, so a message sits unsent in the composer | `fix/herdr-send-text-then-enter` |
 | not filed yet | an append landing inside a transcript read replays the whole conversation into the topic ([RCA](20260818-transcript-replay-on-append.md)) | `fix/transcript-replay-on-append` |
+| not filed yet | a transcript whose times are stamped without its bytes changing replays the whole conversation into the topic ([RCA](20260818-transcript-replay-on-append.md)) | `fix/transcript-replay-on-touch` |
 
 #169 additionally notes, as explicitly out of scope, that a binding dropped
 without the topic being removed leaves a topic nothing can reach again — the
