@@ -70,3 +70,45 @@ unmodified v4.6.0, so it predates this change. All the tests in that file drive
 `window_id="@1"`, and provider resolution caches per window id, so the likely
 culprit is cached provider state crossing test boundaries. Worth a separate
 look before it masks a real regression.
+
+---
+
+## Second cause, same symptom — a stamped transcript read as a rewritten one
+
+**Branch:** `fix/transcript-replay-on-touch` (base: upstream `main` at v4.6.0)
+
+The append race above was not the whole of it: the topic kept filling after the
+first fix shipped, and after a `/clear`.
+
+`_prepare_observed_generation` runs before each read and resets the offset to 0
+when the transcript's ctime moved and its size did not grow. ctime moves for a
+metadata-only touch as much as for a rewrite, and Claude Code stamps transcript
+times: `b2ae3694…jsonl` in `/home/newton/bob` carries mtime 03:32:45.135 MSK
+against a last entry written at 02:38:14 MSK — 54 minutes earlier — and the
+fractional part is whole milliseconds, which is a `utimes` call, not a write.
+The bytes were untouched: the entry beginning at byte 2338921, the offset
+ccgram had consumed at the time, is still an entry timestamped seconds after
+that offset was recorded. The file is append-only, and all 4.5 MB of it went to
+the topic again.
+
+**Fix.** The prefix digest computed two lines above answers the same question
+from the bytes — it hashes the file up to the size last committed and compares
+it with the digest of what was read. Where it has a baseline it has already
+decided, and ctime can only overrule it wrongly, so ctime now applies only when
+there is no baseline (a session tracked but not yet committed).
+
+**Reproduction.** `test_metadata_touch_is_not_a_rewrite` stamps a fully consumed
+transcript with later times and asserts nothing is delivered. It sleeps 50 ms
+before the touch: the kernel takes file times from a coarse clock, so a touch
+in the same tick as the read does not move ctime at all and the defect does not
+reproduce. That is also the reason the neighbouring upstream test
+(`test_replacement_between_stat_and_open_retries_from_zero`, noted above) is
+intermittent — it depends on two timestamps taken microseconds apart differing.
+
+**Still open.** Both fixes make ccgram stop *mistaking* a stable file for a
+rewritten one. Neither changes what happens on a real rewrite: the offset goes
+to 0 and everything above it is delivered a second time. Claude entries carry a
+`uuid`, so a rewrite could instead be resynchronised by finding the last
+delivered entry in the new file and resuming after it, falling back to 0 only
+when it is genuinely a different file. Worth doing before the next transcript
+format change makes rewrites routine.
