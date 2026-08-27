@@ -65,10 +65,17 @@ the third the branch carries, and it closes the issue as filed; no separate
 issue is owed for it.
 
 [#170]: https://github.com/alexei-led/ccgram/pull/170
-| not filed yet | `/sync` cannot see two topics bound to one live window | `fix/sync-close-duplicate-topic` |
-| not filed yet | herdr `pane run` batches the newline, so a message sits unsent in the composer | `fix/herdr-send-text-then-enter` |
-| not filed yet | an append landing inside a transcript read replays the whole conversation into the topic ([RCA](20260818-transcript-replay-on-append.md)) | `fix/transcript-replay-on-append` |
-| not filed yet | a transcript whose times are stamped without its bytes changing replays the whole conversation into the topic ([RCA](20260818-transcript-replay-on-append.md)) | `fix/transcript-replay-on-touch` |
+
+**Where the queue stands at v4.6.8 (2026-08-28).** #170 merged on 2026-08-19,
+closing #169. Three of the four remaining items were fixed upstream before we
+filed them, so their branches are spent and this repo no longer carries them:
+
+| Item | Branch | Outcome |
+|---|---|---|
+| `/sync` cannot see two topics bound to one live window | `fix/sync-close-duplicate-topic` | still ours — upstream reports a `duplicate_binding` in the audit but does not close the topic; carried on `main`, unfiled |
+| herdr `pane run` batches the newline, so a message sits unsent in the composer | `fix/herdr-send-text-then-enter` | superseded by upstream #189, which splits `send-text` from a separate `Enter` |
+| an append landing inside a transcript read replays the whole conversation ([RCA](20260818-transcript-replay-on-append.md)) | `fix/transcript-replay-on-append` | superseded by upstream `ffccf81` |
+| a transcript stamped without its bytes changing replays the whole conversation ([RCA](20260818-transcript-replay-on-append.md)) | `fix/transcript-replay-on-touch` | superseded by upstream `577b841` |
 
 #169 additionally notes, as explicitly out of scope, that a binding dropped
 without the topic being removed leaves a topic nothing can reach again — the

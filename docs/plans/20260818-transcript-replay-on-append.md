@@ -1,5 +1,16 @@
 # RCA — A topic receives the whole conversation again, at random
 
+> **Superseded upstream, 2026-08-19.** Both fixes below were overtaken by
+> upstream's own, and neither is carried in this repo any more: `ffccf81`
+> ("stop replaying whole transcripts on false replacement signals") verifies
+> that the consumed prefix survived before believing a replacement signal, and
+> `577b841` ("validate consumed transcript prefix on rewrites") does the same
+> for the pre-read check. On a rewrite it genuinely detects, upstream now jumps
+> the parse position to EOF rather than to 0 — never replay — and `#191` split
+> the parse position from a delivered watermark so nothing is lost on restart.
+> The measurements and the reasoning below stand; the patches do not.
+
+
 **Date:** 2026-08-18
 **Branch:** `fix/transcript-replay-on-append` (base: upstream `main` at v4.6.0)
 **Environment:** ccgram 0.1.dev653 (upstream v4.6.0 + our fixes), herdr backend,
