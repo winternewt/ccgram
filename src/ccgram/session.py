@@ -692,7 +692,48 @@ class SessionManager:
                     )
                 )
 
-        # 7. Orphaned tmux windows (live, known to ccgram, but not bound to any topic)
+        # 7. One window answering for two topics. A window re-keyed while a
+        # topic was being created can end up bound twice — under its old
+        # identity and its new one — and folding the two onto one id leaves
+        # both threads pointing at it. The reverse index holds a single thread
+        # per window, so exactly one of them receives anything; the rest sit in
+        # the forum empty, and nothing else in this audit looks at a binding
+        # whose window is alive. The thread the router resolves is the keeper.
+        # Ids fold case here as in the orphan check below.
+        by_window: dict[tuple[int, int | None, str], list[int]] = {}
+        window_spelling: dict[tuple[int, int | None, str], str] = {}
+        # Legacy Herdr bindings are never actioned (see 1).
+        for uid, tid, wid in thread_router.iter_thread_bindings():
+            if wid in legacy_bindings:
+                continue
+            chat_id = thread_router.resolve_chat_id(uid, tid)
+            group = (uid, chat_id, canonical_window_id(wid))
+            by_window.setdefault(group, []).append(tid)
+            window_spelling.setdefault(group, wid)
+        for group, thread_ids in by_window.items():
+            uid, chat_id, _ = group
+            wid = window_spelling[group]
+            if len(thread_ids) == 1:
+                continue
+            keeper = thread_router.get_thread_for_window(uid, wid, chat_id=chat_id)
+            if keeper is None:
+                keeper = max(thread_ids)
+            display = thread_router.get_display_name(wid)
+            for tid in sorted(thread_ids):
+                if tid == keeper:
+                    continue
+                issues.append(
+                    AuditIssue(
+                        category="duplicate_binding",
+                        detail=(
+                            f"user:{uid} thread:{tid} window:{wid} ({display}) "
+                            f"— window already answers in thread {keeper}"
+                        ),
+                        fixable=True,
+                    )
+                )
+
+        # 8. Orphaned tmux windows (live, known to ccgram, but not bound to any topic)
         # Comparison folds case on both sides: an id ccgram persisted may be
         # spelled differently from the live listing, and an orphan that reads
         # as unknown here is simply never adopted.

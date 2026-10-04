@@ -72,6 +72,7 @@ _CATEGORY_LABELS: dict[str, str] = {
     "stale_offset": "stale offset entry",
     "display_name_drift": "display name drift",
     "orphaned_window": "unbound window (no topic)",
+    "duplicate_binding": "duplicate topic (window already answers elsewhere)",
     "legacy_herdr": "legacy Herdr binding (blocked; archive or explicitly rebind)",
 }
 
@@ -413,6 +414,65 @@ async def _close_ghost_topics(
     return closed_count, manual_close_count, stopped_on_rate_limit
 
 
+async def _close_duplicate_topics(
+    client: TelegramClient, issues: list[AuditIssue]
+) -> int:
+    """Retire topics for a window that already answers in another topic.
+
+    The duplicate is empty by construction — the router resolves one thread per
+    window, so this one never received anything — but it stays in the forum
+    looking like a session until somebody removes it. Returns the count of
+    topics actually removed; one Telegram refuses stays retired and is retried
+    by the retired-topic sweep.
+    """
+    removed = 0
+    for issue in issues:
+        if issue.category != "duplicate_binding":
+            continue
+        match = _GHOST_RE.search(issue.detail)
+        if not match:
+            continue
+        user_id = int(match.group(1))
+        thread_id = int(match.group(2))
+        window_id = match.group(3)
+        if is_pending_creation(window_id):
+            continue
+        bindings = [
+            (chat, wid)
+            for uid, chat, tid, wid in thread_router.iter_thread_bindings_with_chat()
+            if uid == user_id
+            and tid == thread_id
+            and canonical_window_id(wid) == canonical_window_id(window_id)
+            and chat is not None
+        ]
+        for chat_id, exact_window in bindings:
+            outcome = await retire_topic_binding(
+                client,
+                user_id,
+                thread_id,
+                exact_window,
+                router=thread_router,
+                chat_id=chat_id,
+                retirement_reason="duplicate_binding",
+                # window_dead=False: the window is alive and still answering in
+                # the keeper topic. Qualified-scope cleanup would clear state
+                # that topic is using.
+                before_delete=partial(
+                    clear_topic_state,
+                    user_id,
+                    thread_id,
+                    client=client,
+                    window_id=exact_window,
+                    chat_id=chat_id,
+                    window_dead=False,
+                ),
+            )
+            removed += outcome in {"deleted", "already_gone"}
+            if outcome == "rate_limited":
+                return removed
+    return removed
+
+
 async def _adopt_orphaned_windows(
     client: TelegramClient, issues: list[AuditIssue]
 ) -> None:
@@ -743,7 +803,10 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
 
     await _sync_live_topic_names(client, live_ids)
 
-    # Enforcement: adopt orphans first so stale same-name topics can be rebound.
+    # Enforcement: drop duplicate topics before adoption, so a window counted
+    # as bound twice is bound once when orphan detection reads the bindings.
+    duplicate_count = await _close_duplicate_topics(client, pre_audit.issues)
+    # Adopt orphans next so stale same-name topics can be rebound.
     await _adopt_orphaned_windows(client, pre_audit.issues)
     recreated_count = await _recreate_dead_topics(client, pre_audit.issues)
     closed_count, manual_close_count, retired_outcomes = await _cleanup_stale_topics(
@@ -770,7 +833,7 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
     text, keyboard = _format_report(
         post_audit,
         fixed_count=actual_fixed,
-        closed_topic_count=closed_count,
+        closed_topic_count=closed_count + duplicate_count,
         recreated_topic_count=recreated_count,
         manual_close_count=manual_close_count,
         retired_outcomes=retired_outcomes,

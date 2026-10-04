@@ -16,6 +16,7 @@ from ccgram.handlers.callback_data import CB_SYNC_DISMISS, CB_SYNC_FIX
 from ccgram.handlers.sync_command import (
     _cleanup_retired_topics,
     _cleanup_stale_topics,
+    _close_duplicate_topics,
     _close_ghost_topics,
     _format_report,
     _probe_dead_topics,
@@ -2292,3 +2293,72 @@ class TestSyncAuditSeparatesLivenessFromAdoption:
         for call in mock_adopt.call_args_list:
             for issue in call[0][1]:
                 assert "REFUSED" not in getattr(issue, "detail", "")
+
+
+class TestDuplicateTopicClose:
+    """A window bound to two topics: retire the one nothing answers in."""
+
+    def _issue(self) -> AuditIssue:
+        return AuditIssue(
+            "duplicate_binding",
+            "user:100 thread:2 window:@1 (proj) — window already answers in thread 1",
+            fixable=True,
+        )
+
+    async def test_retires_the_empty_topic_keeping_window_state(
+        self, _patch_deps
+    ) -> None:
+        _, _, _, mock_tr, _, _ = _patch_deps
+        mock_tr.iter_thread_bindings_with_chat.return_value = [
+            (100, -500, 1, "@1"),
+            (100, -500, 2, "@1"),
+        ]
+        client = AsyncMock()
+
+        with (
+            patch("ccgram.handlers.sync_command.clear_topic_state") as mock_clear,
+            patch(
+                "ccgram.handlers.sync_command.retire_topic_binding",
+                new_callable=AsyncMock,
+                return_value="deleted",
+            ) as mock_retire,
+        ):
+            closed = await _close_duplicate_topics(client, [self._issue()])
+            before_delete = mock_retire.call_args.kwargs["before_delete"]
+            await before_delete()
+
+        assert closed == 1
+        mock_retire.assert_awaited_once()
+        assert mock_retire.call_args.args[1:] == (100, 2, "@1")
+        assert mock_retire.call_args.kwargs["chat_id"] == -500
+        # The window is alive and still serving the keeper topic, so its
+        # session-scoped state must survive the cleanup.
+        assert mock_clear.await_args.kwargs["window_dead"] is False
+
+    async def test_skips_when_the_binding_already_moved(self, _patch_deps) -> None:
+        _, _, _, mock_tr, _, _ = _patch_deps
+        mock_tr.iter_thread_bindings_with_chat.return_value = [(100, -500, 2, "@other")]
+        client = AsyncMock()
+
+        with patch(
+            "ccgram.handlers.sync_command.retire_topic_binding",
+            new_callable=AsyncMock,
+        ) as mock_retire:
+            closed = await _close_duplicate_topics(client, [self._issue()])
+
+        assert closed == 0
+        mock_retire.assert_not_awaited()
+
+    async def test_a_refused_delete_is_not_counted(self, _patch_deps) -> None:
+        _, _, _, mock_tr, _, _ = _patch_deps
+        mock_tr.iter_thread_bindings_with_chat.return_value = [(100, -500, 2, "@1")]
+        client = AsyncMock()
+
+        with patch(
+            "ccgram.handlers.sync_command.retire_topic_binding",
+            new_callable=AsyncMock,
+            return_value="failed",
+        ):
+            closed = await _close_duplicate_topics(client, [self._issue()])
+
+        assert closed == 0
