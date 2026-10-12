@@ -102,6 +102,14 @@ def compact_callback_data(prefix: str, payload: str, window_id: str) -> str:
         return payload
     _ensure_loaded()
     _prune_expired()
+    # The status bubble re-renders the same buttons on every refresh. Minting
+    # a fresh token each time filled the bounded map within minutes and
+    # evicted the tokens of keyboards still on screen (an AskUserQuestion
+    # answered a few minutes later read "expired"). Reuse the live token for
+    # an identical target and move it to the young end, refreshing its TTL.
+    reused = _reuse_token(payload, window_id)
+    if reused is not None:
+        return f"{prefix}{_TOKEN_MARKER}{reused}"
     while len(_tokens) >= _MAX_CALLBACK_TOKENS:
         _tokens.pop(next(iter(_tokens)))
     while True:
@@ -160,6 +168,22 @@ def revoke_window_tokens(window_id: str) -> None:
             removed = True
     if removed:
         _persist_tokens()
+
+
+def _reuse_token(payload: str, window_id: str) -> str | None:
+    """Refresh and return an existing token for the same target, if any."""
+    for token, entry in _tokens.items():
+        if entry.payload == payload and entry.window_id == window_id:
+            del _tokens[token]
+            _tokens[token] = _CallbackToken(
+                payload=payload,
+                window_id=window_id,
+                expires_at=time.monotonic() + _TOKEN_TTL_SECONDS,
+                expires_at_wall=time.time() + _TOKEN_TTL_SECONDS,
+            )
+            _persist_tokens()
+            return token
+    return None
 
 
 def _prune_expired() -> None:

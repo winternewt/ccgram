@@ -80,3 +80,41 @@ def test_revoke_window_tokens_removes_only_that_window() -> None:
     assert (
         callback_tokens.resolve_callback_data(retained, 1, lambda *_: True) == "y" * 65
     )
+
+
+def test_repeated_target_reuses_its_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Re-rendering the same button must not mint a new token each time."""
+    first = callback_tokens.compact_callback_data("st:ss:", "x" * 65, "@w")
+    again = callback_tokens.compact_callback_data("st:ss:", "x" * 65, "@w")
+
+    assert again == first
+    assert len(callback_tokens._tokens) == 1
+
+
+def test_status_refreshes_do_not_evict_a_pending_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prompt's buttons survive many refreshes of another window's status bar."""
+    monkeypatch.setattr(callback_tokens, "_MAX_CALLBACK_TOKENS", 8)
+    prompt = callback_tokens.compact_callback_data("aq:enter:", "p" * 65, "@asking")
+
+    status_payloads = [f"st:{action}:" + "s" * 65 for action in ("esc", "ss", "lr")]
+    for _refresh in range(50):
+        for payload in status_payloads:
+            callback_tokens.compact_callback_data("st:", payload, "@busy")
+
+    assert callback_tokens.resolve_callback_data(prompt, 1, lambda *_: True) == "p" * 65
+
+
+def test_reuse_refreshes_expiry(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = 100.0
+    monkeypatch.setattr(callback_tokens.time, "monotonic", lambda: now)
+    callback = callback_tokens.compact_callback_data("st:ss:", "x" * 65, "@w")
+    later = now + callback_tokens._TOKEN_TTL_SECONDS - 1
+    monkeypatch.setattr(callback_tokens.time, "monotonic", lambda: later)
+    callback_tokens.compact_callback_data("st:ss:", "x" * 65, "@w")
+    monkeypatch.setattr(callback_tokens.time, "monotonic", lambda: later + 10)
+
+    assert (
+        callback_tokens.resolve_callback_data(callback, 1, lambda *_: True) == "x" * 65
+    )
