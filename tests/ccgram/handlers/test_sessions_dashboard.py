@@ -349,3 +349,64 @@ class TestDashboardIdentityFoldsCase:
 
         assert "\U0001f7e2 proj" in text
         assert "⚫" not in text
+
+
+class TestSessionsNew:
+    """'New Session' creates the topic itself and starts the flow inside it."""
+
+    async def test_creates_topic_and_posts_browser_into_it(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from ccgram.handlers.sessions_dashboard import handle_sessions_new
+        from ccgram.handlers.user_state import PENDING_THREAD_ID
+        from ccgram.telegram_client import FakeTelegramClient
+
+        new_thread = 777
+        chat_id = -100123
+        client = FakeTelegramClient()
+        client.returns["create_forum_topic"] = SimpleNamespace(
+            message_thread_id=new_thread
+        )
+        query = MagicMock()
+        query.answer = AsyncMock()
+        query.message.chat = SimpleNamespace(id=chat_id, type="supergroup")
+        user_data: dict = {}
+        monkeypatch.chdir(tmp_path)
+
+        with (
+            patch("ccgram.handlers.text.text_handler.tmux_manager") as mux,
+            patch(
+                "ccgram.handlers.text.text_handler.thread_router.iter_thread_bindings",
+                return_value=[],
+            ),
+        ):
+            mux.list_windows = AsyncMock(return_value=[])
+            await handle_sessions_new(query, 100, user_data, client)
+
+        created = client.last_call("create_forum_topic")
+        assert created is not None
+        assert created.kwargs["chat_id"] == chat_id
+        sent = client.last_call("send_message")
+        assert sent is not None
+        assert sent.kwargs["chat_id"] == chat_id
+        assert sent.kwargs["message_thread_id"] == new_thread
+        assert sent.kwargs["reply_markup"] is not None
+        # The browser's callbacks are matched against the pending thread.
+        assert user_data[PENDING_THREAD_ID] == new_thread
+
+    async def test_topic_creation_failure_is_reported(self) -> None:
+        from telegram.error import BadRequest
+
+        from ccgram.handlers.sessions_dashboard import handle_sessions_new
+        from ccgram.telegram_client import FakeTelegramClient
+
+        client = FakeTelegramClient()
+        client.set_side_effect("create_forum_topic", [BadRequest("not enough rights")])
+        query = MagicMock()
+        query.answer = AsyncMock()
+        query.message.chat = SimpleNamespace(id=-1, type="supergroup")
+
+        await handle_sessions_new(query, 100, {}, client)
+
+        assert client.call_count("send_message") == 0
+        assert query.answer.await_args.kwargs.get("show_alert") is True

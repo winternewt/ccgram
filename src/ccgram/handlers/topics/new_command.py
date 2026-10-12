@@ -1,4 +1,8 @@
-"""``/start`` handler — welcome message for the bot.
+"""``/start`` handler — welcome message, or a new session in a fresh topic.
+
+In a named topic with no session bound, ``/start`` opens the same window
+picker / directory browser a first text message would; elsewhere it shows
+the welcome and the command panel.
 
 Authorization is checked first. On unauthorized access an explanatory
 reply is sent. Any in-progress directory-browser, worktree-picker, and
@@ -10,9 +14,13 @@ interfere with the next interaction.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from telegram import Update
+from telegram import Message, Update
+import functools
+
 from ...config import config
+from ...thread_router import thread_router
 from ..messaging_pipeline.message_sender import safe_reply
+from ..callback_helpers import get_thread_id
 from ..commands import commands_command
 from ..user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
 from .directory_browser import (
@@ -41,6 +49,24 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         context.user_data.pop(PENDING_THREAD_ID, None)
         context.user_data.pop(PENDING_THREAD_TEXT, None)
 
+    message = update.message
+    thread_id = get_thread_id(update)
+    if message and thread_id is not None and not _is_bound(user.id, thread_id, message):
+        # Lazy: handlers.text imports this package (directory_browser,
+        # worktree); a module-level import would close the cycle.
+        from ..text.text_handler import start_session_flow
+
+        if message.chat.type in ("group", "supergroup"):
+            thread_router.set_group_chat_id(user.id, thread_id, message.chat.id)
+        await start_session_flow(
+            user.id,
+            thread_id,
+            "",
+            context.user_data,
+            functools.partial(safe_reply, message),
+        )
+        return
+
     if update.message:
         await safe_reply(
             update.message,
@@ -49,3 +75,10 @@ async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "Use the pinned command panel; /commands opens it again.",
         )
         await commands_command(update, context)
+
+
+def _is_bound(user_id: int, thread_id: int, message: Message) -> bool:
+    return (
+        thread_router.get_window_for_thread(user_id, thread_id, message.chat.id)
+        is not None
+    )

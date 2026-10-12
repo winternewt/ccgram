@@ -12,6 +12,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import asyncio
 import contextlib
+import functools
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import structlog
@@ -281,6 +283,26 @@ async def _handle_unbound_topic(
     if window_id is not None:
         return False
 
+    await start_session_flow(
+        user_id, thread_id, text, user_data, functools.partial(safe_reply, message)
+    )
+    return True
+
+
+async def start_session_flow(
+    user_id: int,
+    thread_id: int,
+    text: str,
+    user_data: dict | None,
+    send: Callable[..., Awaitable[Message | None]],
+) -> None:
+    """Offer the window picker, or the directory browser, in an unbound topic.
+
+    ``send(text, reply_markup=...)`` posts into that topic: a reply for a
+    message typed there, a plain send for a topic the bot just created. The
+    browser's callbacks are checked against ``PENDING_THREAD_ID``, so the
+    topic the prompt is posted in must be ``thread_id``.
+    """
     all_windows = await tmux_manager.list_windows()
     bound_ids = {bound_wid for _, _, bound_wid in thread_router.iter_thread_bindings()}
     bound_lookup = {canonical_window_id(wid) for wid in bound_ids}
@@ -309,10 +331,10 @@ async def _handle_unbound_topic(
             user_data[UNBOUND_WINDOWS_KEY] = win_ids
             user_data[PENDING_THREAD_ID] = thread_id
             user_data[PENDING_THREAD_TEXT] = text
-        await safe_reply(message, msg_text, reply_markup=keyboard)
+        await send(msg_text, reply_markup=keyboard)
         if text:
-            await safe_reply(message, PENDING_DELIVERY_NOTICE)
-        return True
+            await send(PENDING_DELIVERY_NOTICE)
+        return
 
     # No unbound windows — show directory browser to create a new session
     logger.info(
@@ -329,10 +351,9 @@ async def _handle_unbound_topic(
         user_data[BROWSE_DIRS_KEY] = subdirs
         user_data[PENDING_THREAD_ID] = thread_id
         user_data[PENDING_THREAD_TEXT] = text
-    await safe_reply(message, msg_text, reply_markup=keyboard)
+    await send(msg_text, reply_markup=keyboard)
     if text:
-        await safe_reply(message, PENDING_DELIVERY_NOTICE)
-    return True
+        await send(PENDING_DELIVERY_NOTICE)
 
 
 async def _handle_dead_window(

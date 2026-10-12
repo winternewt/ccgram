@@ -14,6 +14,7 @@ Key functions:
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING
 import structlog
 
@@ -23,6 +24,7 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
+from telegram.error import TelegramError
 from ..config import config
 from ..session import session_manager
 from ..telegram_client import PTBTelegramClient, TelegramClient
@@ -47,7 +49,7 @@ from .callback_tokens import compact_callback_data, resolve_callback_data
 from .callback_registry import register
 from .cleanup import clear_topic_state
 from .topics.topic_deletion import cleanup_retired_topics, retire_topic_binding
-from .messaging_pipeline.message_sender import safe_edit, safe_reply
+from .messaging_pipeline.message_sender import safe_edit, safe_reply, safe_send
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
@@ -57,6 +59,7 @@ logger = structlog.get_logger()
 _REFRESH_BTN = InlineKeyboardButton(
     "\U0001f504 Refresh", callback_data=CB_SESSIONS_REFRESH
 )
+_NEW_TOPIC_NAME = "New session"
 _NEW_BTN = InlineKeyboardButton("\u2795 New Session", callback_data=CB_SESSIONS_NEW)
 
 # Green running, black stopped, white when the multiplexer could not be asked.
@@ -70,7 +73,7 @@ async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     if not bindings:
         keyboard = InlineKeyboardMarkup([[_REFRESH_BTN, _NEW_BTN]])
         return (
-            "No active sessions.\n\nCreate a new topic to start a session.",
+            "No active sessions.\n\nTap New Session to start one.",
             keyboard,
         )
 
@@ -251,6 +254,43 @@ async def handle_sessions_kill_confirm(
     await safe_edit(query, f"{headline} '{display}'\n\n{text}", reply_markup=keyboard)
 
 
+async def handle_sessions_new(
+    query: CallbackQuery,
+    user_id: int,
+    user_data: dict | None,
+    client: TelegramClient,
+) -> None:
+    """Create a topic and start the session flow inside it.
+
+    The directory browser (or window picker) is posted into the new topic,
+    so its callbacks arrive from the thread the flow is pending on.
+    """
+    chat = query.message.chat if query.message else None
+    if chat is None:
+        await query.answer("Cannot create a topic here", show_alert=True)
+        return
+    try:
+        topic = await client.create_forum_topic(chat_id=chat.id, name=_NEW_TOPIC_NAME)
+    except TelegramError as exc:
+        logger.warning("sessions_new: topic creation failed: %s", exc)
+        await query.answer(f"Could not create a topic: {exc}", show_alert=True)
+        return
+    thread_id = topic.message_thread_id
+    if chat.type in ("group", "supergroup"):
+        thread_router.set_group_chat_id(user_id, thread_id, chat.id)
+    await query.answer("New topic created")
+    # Lazy: handlers.text imports handlers.topics, which this module imports.
+    from .text.text_handler import start_session_flow
+
+    await start_session_flow(
+        user_id,
+        thread_id,
+        "",
+        user_data,
+        functools.partial(safe_send, client, chat.id, message_thread_id=thread_id),
+    )
+
+
 @register(
     CB_SESSIONS_REFRESH,
     CB_SESSIONS_NEW,
@@ -274,7 +314,9 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await handle_sessions_refresh(query, user.id)
         await query.answer("Refreshed")
     elif data == CB_SESSIONS_NEW:
-        await query.answer("Create a new topic to start a session.")
+        await handle_sessions_new(
+            query, user.id, context.user_data, PTBTelegramClient(context.bot)
+        )
     elif data.startswith(CB_SESSIONS_KILL_CONFIRM):
         window_id = data[len(CB_SESSIONS_KILL_CONFIRM) :]
         if not user_owns_window(user.id, window_id):

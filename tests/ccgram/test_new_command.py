@@ -135,3 +135,53 @@ class TestCommandRegistration:
 
         assert start_handler is not None
         assert start_handler.callback is new_command
+
+
+class TestStartInUnboundTopic:
+    """/start in a fresh topic starts a session instead of the welcome."""
+
+    def _topic_update(self, thread_id: int, chat_id: int = -100123) -> MagicMock:
+        update = _make_update(100, thread_id)
+        update.message.chat.id = chat_id
+        update.message.chat.type = "supergroup"
+        return update
+
+    async def test_unbound_topic_starts_session_flow(
+        self, _allow_user: AsyncMock
+    ) -> None:
+        update = self._topic_update(42)
+        ctx = _make_context()
+        with (
+            patch(f"{_NC}.get_thread_id", return_value=42),
+            patch(f"{_NC}.thread_router") as router,
+            patch(
+                "ccgram.handlers.text.text_handler.start_session_flow",
+                new_callable=AsyncMock,
+            ) as flow,
+        ):
+            router.get_window_for_thread.return_value = None
+            await new_command(update, ctx)
+
+        flow.assert_awaited_once()
+        assert flow.await_args is not None
+        args = flow.await_args.args
+        assert args[:4] == (100, 42, "", ctx.user_data)
+        router.set_group_chat_id.assert_called_once_with(100, 42, -100123)
+        _allow_user.assert_not_awaited()
+
+    async def test_bound_topic_keeps_welcome(self, _allow_user: AsyncMock) -> None:
+        update = self._topic_update(42)
+        ctx = _make_context()
+        with (
+            patch(f"{_NC}.get_thread_id", return_value=42),
+            patch(f"{_NC}.thread_router") as router,
+            patch(
+                "ccgram.handlers.text.text_handler.start_session_flow",
+                new_callable=AsyncMock,
+            ) as flow,
+        ):
+            router.get_window_for_thread.return_value = "@3"
+            await new_command(update, ctx)
+
+        flow.assert_not_awaited()
+        _allow_user.assert_awaited_once_with(update, ctx)
