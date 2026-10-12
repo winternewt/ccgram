@@ -89,7 +89,7 @@ Change tool-call visibility (hide/show `tool_use`/`tool_result`):
 
 Change topic emoji color scheme:
 
-- `src/ccgram/handlers/status/topic_emoji.py` maps internal status (`active`/`idle`/`done`/`dead`) to Telegram color via `CCGRAM_STATUS_MODE`. Add modes by extending the mode→colorname dispatch.
+- `src/ccgram/handlers/status/topic_emoji.py` maps internal status (`active`/`blocked`/`ready`/`idle`/`done`/`dead`) to Telegram color via `CCGRAM_STATUS_MODE`. Add modes by extending the mode→colorname dispatch.
 
 Change PTB handler registration / lifecycle:
 

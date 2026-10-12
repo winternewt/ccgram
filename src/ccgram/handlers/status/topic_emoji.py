@@ -44,6 +44,8 @@ _TOPIC_NAME_LIMIT = 128
 # that ``strip_emoji_prefix`` and tests work regardless of mode.
 EMOJI_GREEN_CIRCLE = "\U0001f7e2"
 EMOJI_YELLOW_CIRCLE = "\U0001f7e1"
+EMOJI_RED_CIRCLE = "\U0001f534"
+EMOJI_WHITE_CIRCLE = "\u26aa"
 EMOJI_DONE = "\u2705"  # Check mark (agent exited normally)
 EMOJI_DEAD = "\U0001f4a5"  # Collision / crash
 EMOJI_YOLO = "\U0001f3b2"  # Dice (risk/gamble — auto-approve mode)
@@ -60,23 +62,44 @@ EMOJI_IDLE = EMOJI_YELLOW_CIRCLE
 # State → emoji mapping.
 #   system mode (default): green=active (working), yellow=idle (paused).
 #   user mode:             green=idle (waiting for me), yellow=active (busy).
+#   herdr mode:            herdr's sidebar — yellow=working, red=blocked,
+#                          green=turn finished, white=idle (seen).
+# "ready" (a finished turn) and "blocked" (waiting on a prompt) are finer
+# states only herdr mode draws; the other modes fold them into idle/active.
 _STATE_EMOJI_SYSTEM: dict[str, str] = {
     "active": EMOJI_GREEN_CIRCLE,
+    "blocked": EMOJI_GREEN_CIRCLE,
     "idle": EMOJI_YELLOW_CIRCLE,
+    "ready": EMOJI_YELLOW_CIRCLE,
     "done": EMOJI_DONE,
     "dead": EMOJI_DEAD,
 }
 _STATE_EMOJI_USER: dict[str, str] = {
     "active": EMOJI_YELLOW_CIRCLE,
+    "blocked": EMOJI_YELLOW_CIRCLE,
     "idle": EMOJI_GREEN_CIRCLE,
+    "ready": EMOJI_GREEN_CIRCLE,
     "done": EMOJI_DONE,
     "dead": EMOJI_DEAD,
+}
+_STATE_EMOJI_HERDR: dict[str, str] = {
+    "active": EMOJI_YELLOW_CIRCLE,
+    "blocked": EMOJI_RED_CIRCLE,
+    "idle": EMOJI_WHITE_CIRCLE,
+    "ready": EMOJI_GREEN_CIRCLE,
+    "done": EMOJI_DONE,
+    "dead": EMOJI_DEAD,
+}
+_STATE_EMOJI_BY_MODE: dict[str, dict[str, str]] = {
+    "system": _STATE_EMOJI_SYSTEM,
+    "user": _STATE_EMOJI_USER,
+    "herdr": _STATE_EMOJI_HERDR,
 }
 
 
 def _state_emoji_map() -> dict[str, str]:
     """Return the active state→emoji table for the configured status mode."""
-    return _STATE_EMOJI_USER if config.status_mode == "user" else _STATE_EMOJI_SYSTEM
+    return _STATE_EMOJI_BY_MODE.get(config.status_mode, _STATE_EMOJI_SYSTEM)
 
 
 # Debounce: state must be stable for this many seconds before updating topic name.
@@ -92,7 +115,9 @@ DEBOUNCE_TERMINAL_SECONDS = 5.0  # done, dead
 
 _DEBOUNCE_BY_STATE: dict[str, float] = {
     "active": DEBOUNCE_TO_ACTIVE_SECONDS,
+    "blocked": DEBOUNCE_TO_ACTIVE_SECONDS,
     "idle": DEBOUNCE_TO_IDLE_SECONDS,
+    "ready": DEBOUNCE_TO_IDLE_SECONDS,
     "done": DEBOUNCE_TERMINAL_SECONDS,
     "dead": DEBOUNCE_TERMINAL_SECONDS,
 }
@@ -467,7 +492,15 @@ async def update_topic_emoji(
 
 def strip_emoji_prefix(name: str) -> str:
     """Remove known emoji prefix from a topic name."""
-    for emoji in (EMOJI_ACTIVE, EMOJI_IDLE, EMOJI_DONE, EMOJI_DEAD, *_EMOJI_DEAD_OLD):
+    for emoji in (
+        EMOJI_GREEN_CIRCLE,
+        EMOJI_YELLOW_CIRCLE,
+        EMOJI_RED_CIRCLE,
+        EMOJI_WHITE_CIRCLE,
+        EMOJI_DONE,
+        EMOJI_DEAD,
+        *_EMOJI_DEAD_OLD,
+    ):
         prefix = f"{emoji} "
         if name.startswith(prefix):
             name = name[len(prefix) :]

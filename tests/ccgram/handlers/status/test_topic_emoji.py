@@ -30,7 +30,9 @@ from ccgram.handlers.status.topic_emoji import (
 
 _DEBOUNCE_FOR: dict[str, float] = {
     "active": DEBOUNCE_TO_ACTIVE_SECONDS,
+    "blocked": DEBOUNCE_TO_ACTIVE_SECONDS,
     "idle": DEBOUNCE_TO_IDLE_SECONDS,
+    "ready": DEBOUNCE_TO_IDLE_SECONDS,
     "done": DEBOUNCE_TERMINAL_SECONDS,
     "dead": DEBOUNCE_TERMINAL_SECONDS,
 }
@@ -472,7 +474,9 @@ class TestStatusPollingIntegration:
         with _status_poll_env(has_status=False) as (bot, mock_emoji, _tr):
             await _update_status(bot, 1, "@0", thread_id=42)
 
-        _assert_emoji_call(mock_emoji, bot, -100, 42, "idle", "myproject")
+        # A window that has run a turn rests as "ready"; only herdr mode
+        # draws it differently from idle.
+        _assert_emoji_call(mock_emoji, bot, -100, 42, "ready", "myproject")
 
     async def test_startup_window_shows_active_not_idle(self) -> None:
         from ccgram.handlers.polling.polling_state import terminal_poll_state
@@ -602,6 +606,189 @@ class TestStatusMode:
             chat_id=-100,
             message_thread_id=42,
             name=f"{EMOJI_GREEN_CIRCLE} myproject",
+        )
+
+
+class TestHerdrMode:
+    """herdr mode draws herdr's sidebar: yellow/red/green/white."""
+
+    @pytest.fixture
+    def _herdr_mode(self, monkeypatch):
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "status_mode", "herdr")
+        yield
+
+    def test_herdr_mode_table(self, _herdr_mode) -> None:
+        from ccgram.handlers.status.topic_emoji import (
+            EMOJI_RED_CIRCLE,
+            EMOJI_WHITE_CIRCLE,
+            _state_emoji_map,
+        )
+
+        table = _state_emoji_map()
+        assert table["active"] == EMOJI_YELLOW_CIRCLE
+        assert table["blocked"] == EMOJI_RED_CIRCLE
+        assert table["ready"] == EMOJI_GREEN_CIRCLE
+        assert table["idle"] == EMOJI_WHITE_CIRCLE
+        assert table["done"] == EMOJI_DONE
+        assert table["dead"] == EMOJI_DEAD
+
+    @pytest.mark.parametrize("mode", ["system", "user"])
+    def test_other_modes_fold_the_finer_states(self, monkeypatch, mode) -> None:
+        from ccgram.config import config
+        from ccgram.handlers.status.topic_emoji import _state_emoji_map
+
+        monkeypatch.setattr(config, "status_mode", mode)
+        table = _state_emoji_map()
+        assert table["ready"] == table["idle"]
+        assert table["blocked"] == table["active"]
+
+    def test_every_mode_draws_every_state(self) -> None:
+        from ccgram.handlers.status.topic_emoji import _STATE_EMOJI_BY_MODE
+
+        states = {frozenset(table) for table in _STATE_EMOJI_BY_MODE.values()}
+        assert len(states) == 1
+
+    @pytest.mark.parametrize("state", ["blocked", "ready", "idle"])
+    async def test_herdr_title_round_trips(self, _herdr_mode, state) -> None:
+        from ccgram.handlers.status.topic_emoji import _state_emoji_map
+
+        bot = AsyncMock()
+        await _debounced_update(bot, -100, 42, state, "myproject")
+        name = bot.edit_forum_topic.call_args.kwargs["name"]
+        assert name == f"{_state_emoji_map()[state]} myproject"
+        # A later rename must not stack a second prefix on the new glyphs.
+        assert strip_emoji_prefix(name) == "myproject"
+
+    def test_config_accepts_herdr(self, monkeypatch) -> None:
+        from ccgram.config import Config
+
+        monkeypatch.setenv("CCGRAM_STATUS_MODE", "herdr")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "x")
+        monkeypatch.setenv("ALLOWED_USERS", "1")
+        assert Config().status_mode == "herdr"
+
+
+class TestNativeTopicState:
+    """On a native-status backend the resting/active colour follows it."""
+
+    @pytest.fixture(autouse=True)
+    def _cache(self):
+        from ccgram.multiplexer import agent_status_cache
+
+        agent_status_cache.reset()
+        yield agent_status_cache
+        agent_status_cache.reset()
+
+    @pytest.mark.parametrize(
+        ("native", "seen", "expected"),
+        [
+            ("done", False, "ready"),
+            ("idle", True, "idle"),
+            (None, True, "ready"),
+            (None, False, "idle"),
+        ],
+    )
+    async def test_resting_window(self, _cache, native, seen, expected) -> None:
+        from ccgram.handlers.polling.polling_state import terminal_poll_state
+        from ccgram.handlers.polling.window_tick import _update_status
+        from ccgram.multiplexer.base import AgentStatus
+
+        terminal_poll_state._states.pop("@0", None)
+        ws = terminal_poll_state.get_state("@0")
+        ws.has_seen_status = seen
+        ws.startup_quietly_settled = True
+        if native is not None:
+            _cache.set_status("@0", AgentStatus(state=native, agent="claude"))
+
+        with _status_poll_env(has_status=False) as (bot, mock_emoji, _tr):
+            await _update_status(bot, 1, "@0", thread_id=42)
+
+        _assert_emoji_call(mock_emoji, bot, -100, 42, expected, "myproject")
+
+    async def test_native_blocked_paints_blocked(self, _cache) -> None:
+        from ccgram.handlers.polling.window_tick import _update_status
+        from ccgram.multiplexer.base import AgentStatus
+        from ccgram.providers.base import StatusUpdate
+
+        _cache.set_status("@0", AgentStatus(state="blocked", agent="claude"))
+        # What observe synthesizes from a native "blocked" (see
+        # observe._native_agent_status): a status line, so the tick is active.
+        waiting = StatusUpdate(raw_text="waiting for input", display_label="waiting")
+
+        with (
+            _status_poll_env(has_status=True) as (bot, mock_emoji, _tr),
+            patch(f"{_APPLY}._resolve_status", AsyncMock(return_value=waiting)),
+        ):
+            await _update_status(bot, 1, "@0", thread_id=42)
+
+        _assert_emoji_call(mock_emoji, bot, -100, 42, "blocked", "myproject")
+
+    async def test_interactive_prompt_paints_blocked(self) -> None:
+        from ccgram.handlers.polling.window_tick import _update_status
+        from ccgram.providers.base import StatusUpdate
+
+        prompt = StatusUpdate(
+            raw_text="Do you want to proceed?",
+            display_label="PermissionPrompt",
+            is_interactive=True,
+            ui_type="PermissionPrompt",
+        )
+        with (
+            _status_poll_env(has_status=False) as (bot, mock_emoji, _tr),
+            patch(f"{_APPLY}._resolve_status", AsyncMock(return_value=prompt)),
+            patch(f"{_APPLY}.handle_interactive_ui", AsyncMock(return_value=True)),
+        ):
+            await _update_status(bot, 1, "@0", thread_id=42)
+
+        mock_emoji.assert_called_once()
+        assert mock_emoji.call_args.args[1:] == (-100, 42, "blocked", "myproject")
+
+
+class TestBlockedRendersThroughDebounce:
+    """A standing prompt must reach the topic title, not just be requested."""
+
+    async def test_latched_prompt_turns_topic_red(self, monkeypatch) -> None:
+        from ccgram.config import config
+        from ccgram.handlers.polling.window_tick import _update_status
+        from ccgram.handlers.status.topic_emoji import (
+            DEBOUNCE_TO_ACTIVE_SECONDS,
+            EMOJI_RED_CIRCLE,
+        )
+        from ccgram.providers.base import StatusUpdate
+
+        monkeypatch.setattr(config, "status_mode", "herdr")
+        prompt = StatusUpdate(
+            raw_text="Do you want to proceed?",
+            display_label="AskUserQuestion",
+            is_interactive=True,
+            ui_type="AskUserQuestion",
+        )
+        bot = AsyncMock()
+        with (
+            patch(f"{_APPLY}.tmux_manager") as mock_tm,
+            patch(f"{_APPLY}.thread_router") as mock_tr,
+            patch(f"{_APPLY}._resolve_status", AsyncMock(return_value=prompt)),
+            patch(f"{_APPLY}.handle_interactive_ui", AsyncMock(return_value=True)),
+            patch(f"{_APPLY}.clear_interactive_msg", AsyncMock()),
+            # First tick detects the prompt; afterwards it is latched.
+            patch(f"{_APPLY}.get_interactive_window", side_effect=[None, "@0", "@0"]),
+            patch(_PATCH_MONOTONIC) as mock_monotonic,
+        ):
+            mock_tm.find_window_by_id = AsyncMock(return_value=MagicMock())
+            mock_tm.capture_pane = AsyncMock(return_value="prompt on screen")
+            mock_tr.resolve_chat_id.return_value = -100
+            mock_tr.get_display_name.return_value = "myproject"
+            mock_monotonic.return_value = 0.0
+            await _update_status(bot, 1, "@0", thread_id=42)
+            mock_monotonic.return_value = DEBOUNCE_TO_ACTIVE_SECONDS + 0.1
+            await _update_status(bot, 1, "@0", thread_id=42)
+
+        bot.edit_forum_topic.assert_called_once()
+        assert (
+            bot.edit_forum_topic.call_args.kwargs["name"]
+            == f"{EMOJI_RED_CIRCLE} myproject"
         )
 
 

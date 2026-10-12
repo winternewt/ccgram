@@ -67,6 +67,8 @@ if TYPE_CHECKING:
     from ....providers.base import AgentProvider, StatusUpdate
     from ....multiplexer.base import WindowRef as TmuxWindow
     from ..polling_runtime import PollingRuntime
+    from ..polling_state import TerminalPollState
+    from ....telegram_client import TelegramClient
 
 logger = structlog.get_logger()
 
@@ -105,6 +107,32 @@ async def _send_typing_throttled(
 # ── Idle / no-status transitions ────────────────────────────────────────
 
 
+def _native_state(window_id: str) -> str | None:
+    """The backend's last pushed agent state, without probing.
+
+    Only colours the topic; the tick decision never reads it here.
+    """
+    if not tmux_manager.capabilities.native_agent_status:
+        return None
+    native = agent_status_cache.get_status(window_id)
+    return native.state if native is not None else None
+
+
+def _settled_state(window_id: str, ps: "TerminalPollState") -> str:
+    """Topic state for a window at rest: a finished turn, or idle.
+
+    Mirrors herdr's done/idle split (done until the pane is looked at) when
+    the backend reports it; elsewhere a window that has run a turn stays
+    "ready", and only one that has not since startup reads idle.
+    """
+    native = _native_state(window_id)
+    if native == "done":
+        return "ready"
+    if native == "idle":
+        return "idle"
+    return "ready" if ps.check_seen_status(window_id) else "idle"
+
+
 async def _transition_to_idle(
     bot: "Bot",
     user_id: int,
@@ -135,7 +163,9 @@ async def _transition_to_idle(
     else:
         ps.mark_startup_quietly_settled(window_id)
     client = PTBTelegramClient(bot)
-    await update_topic_emoji(client, chat_id, thread_id, "idle", display)
+    await update_topic_emoji(
+        client, chat_id, thread_id, _settled_state(window_id, ps), display
+    )
     lc.clear_typing_state(user_id, thread_id)
     if not send_status:
         return
@@ -277,6 +307,21 @@ def _detected_ui(status: "StatusUpdate") -> tuple[str, str, bool] | None:
     )
 
 
+async def _paint_blocked(
+    client: "TelegramClient", user_id: int, window_id: str, thread_id: int | None
+) -> None:
+    """Colour the topic as waiting on a prompt."""
+    if thread_id is None:
+        return
+    await update_topic_emoji(
+        client,
+        thread_router.resolve_chat_id(user_id, thread_id),
+        thread_id,
+        "blocked",
+        thread_router.get_display_name(window_id),
+    )
+
+
 async def _check_interactive_only(
     bot: "Bot",
     user_id: int,
@@ -314,6 +359,8 @@ async def _check_interactive_only(
         )
         if not handled and not status.ui_advisory:
             clear_interactive_mode(user_id, thread_id)
+        elif handled and not status.ui_advisory:
+            await _paint_blocked(PTBTelegramClient(bot), user_id, window_id, thread_id)
 
 
 # ── Passive shell relay ──────────────────────────────────────────────────
@@ -501,8 +548,9 @@ async def _apply_active_transition(
     if thread_id is not None:
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
         display = thread_router.get_display_name(window_id)
+        state = "blocked" if _native_state(window_id) == "blocked" else "active"
         await update_topic_emoji(
-            PTBTelegramClient(bot), chat_id, thread_id, "active", display
+            PTBTelegramClient(bot), chat_id, thread_id, state, display
         )
 
 
@@ -632,6 +680,9 @@ async def _update_status(
     client = PTBTelegramClient(bot)
     if interactive_window == window_id:
         if status is not None and status.is_interactive:
+            # Repeat every tick while the prompt stands: the topic rename is
+            # debounced and only applies on a second sighting.
+            await _paint_blocked(client, user_id, window_id, thread_id)
             return
         await clear_interactive_msg(user_id, client, thread_id)
         clear_interactive_mode(user_id, thread_id)
@@ -643,6 +694,8 @@ async def _update_status(
         await handle_interactive_ui(
             client, user_id, window_id, thread_id, detected=_detected_ui(status)
         )
+        if not status.ui_advisory:
+            await _paint_blocked(client, user_id, window_id, thread_id)
         return
 
     ctx = build_context(window_id, w, status, runtime=runtime)

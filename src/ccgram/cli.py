@@ -201,10 +201,13 @@ def apply_args_to_env(**kwargs: object) -> None:
 )
 @click.option(
     "--status-mode",
-    type=click.Choice(["system", "user"], case_sensitive=False),
+    type=click.Choice(["system", "user", "herdr"], case_sensitive=False),
     default=None,
     envvar="CCGRAM_STATUS_MODE",
-    help="Topic emoji color scheme: 'system' (green=active) or 'user' (green=ready for me).",
+    help=(
+        "Topic emoji color scheme: 'system' (green=active), 'user' "
+        "(green=ready for me) or 'herdr' (herdr's sidebar colours)."
+    ),
 )
 def run_cmd(**kwargs: object) -> None:
     """Start the bot with optional overrides."""

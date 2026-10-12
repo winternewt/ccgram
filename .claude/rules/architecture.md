@@ -199,7 +199,7 @@ Top-level (constants, leaves, top-level commands):
 
 - `status_bubble.py` — keyboard + status message lifecycle (`_status_msg_info`, `send_status_text`, `clear_status_message`, `build_status_keyboard`).
 - `status_bar_actions.py` — button callbacks (last reply, get file, recall, esc, keys).
-- `topic_emoji.py` — topic name emoji updates (active/idle/done/dead + RC/YOLO badges), debounced. Color scheme via `CCGRAM_STATUS_MODE`.
+- `topic_emoji.py` — topic name emoji updates (active/blocked/ready/idle/done/dead + RC/YOLO badges), debounced. Color scheme via `CCGRAM_STATUS_MODE` (`system`/`user` fold blocked→active and ready→idle; `herdr` draws all four circles).
 - `provider_switch.py` — stable provider-change observation, quiet notice, and retry/backoff.
 - `rc_probe.py` — Claude `/remote-control` outcome probe: `arm_rc_probe`, pure `classify_rc_output`, `_classify_loop`. De-duped via `WindowState.rc_probe_state` (in-memory).
 

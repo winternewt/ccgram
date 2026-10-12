@@ -245,10 +245,14 @@ class Config:
         # Color mapping for the topic state emoji prefix.
         # "system" (default): green=active, yellow=idle (system POV: green=working).
         # "user": green=idle, yellow=active (user POV: green=ready for me).
+        # "herdr": herdr's sidebar — yellow=working, red=blocked, green=turn
+        # finished, white=idle; mirrors native agent status where available.
         # Invalid values fall back to "system".
         raw_status_mode = os.getenv("CCGRAM_STATUS_MODE", "").strip().lower()
         self.status_mode: str = (
-            raw_status_mode if raw_status_mode in ("system", "user") else "system"
+            raw_status_mode
+            if raw_status_mode in ("system", "user", "herdr")
+            else "system"
         )
 
         logger.debug(

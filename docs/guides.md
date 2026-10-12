@@ -264,6 +264,22 @@ Topic emojis change color to reflect agent status. The mapping between color and
 | `system` (default) | agent is working                | agent is idle    | "is anything running right now?"   |
 | `user`             | agent is idle / ready for input | agent is working | "does anything need my attention?" |
 
+`herdr` mode draws herdr's sidebar convention instead, with two states the
+other modes fold into green/yellow:
+
+| Emoji | `herdr` mode meaning                                    |
+| ----- | ------------------------------------------------------- |
+| 🟡    | agent is working                                        |
+| 🔴    | agent is blocked on a prompt (permission, question)     |
+| 🟢    | turn finished, not yet looked at (herdr's `done`)       |
+| ⚪    | idle, already seen (herdr's `idle`)                     |
+
+On a backend with native agent status (herdr) the green/white split follows
+it directly, so focusing the pane in herdr turns 🟢 into ⚪ in Telegram too.
+Elsewhere there is no "seen" signal: a finished turn stays 🟢, and ⚪ marks a
+window that has not run a turn since ccgram started. ✅ (exited) and 💥 (dead)
+are the same in every mode.
+
 Set globally via `CCGRAM_STATUS_MODE=user` or `--status-mode user`. Invalid values fall back to `system`.
 
 ## Status Bubble Visibility
