@@ -207,6 +207,37 @@ class TestParseStatusLine:
         pane = f"output\n      ⠋ Loading modules\n{_SEPARATOR}\n"
         assert parse_status_line(pane) == "Loading modules"
 
+    # Captured from a live Claude Code 2.1 pane after the turn ended: the
+    # summary sits in the spinner slot, directly above the input separator.
+    _FINISHED_PANE = (
+        "  waiting on you.\n"
+        "{summary}\n"
+        f"{_SEPARATOR}\n"
+        "❯ post a test issue through the workflow\n"
+        f"{_SEPARATOR}\n"
+        "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+        "            ✔ Update installed · Restart to update\n"
+    )
+
+    @pytest.mark.parametrize(
+        "summary",
+        [
+            "✻ Worked for 5s · done 12:30 AM",
+            "✻ Cogitated for 42s · done 1:34 AM",
+            "✻ Baked for 1m 12s · done 23:05",
+            "✻ Churned for 2h 3m 4s",
+        ],
+    )
+    def test_finished_turn_summary_is_not_status(self, summary: str):
+        """The end-of-turn summary must not read as a working agent."""
+        pane = self._FINISHED_PANE.format(summary=summary)
+        assert parse_status_line(pane) is None
+        assert parse_status_block(pane) is None
+
+    def test_live_line_with_duration_is_still_status(self):
+        pane = self._FINISHED_PANE.format(summary="✶ Working… (1m 53s · ↓ 9.3k tokens)")
+        assert parse_status_line(pane) == "Working… (1m 53s · ↓ 9.3k tokens)"
+
     def test_uses_fixture(self, sample_pane_status_line: str):
         assert parse_status_line(sample_pane_status_line) == "Reading file src/main.py"
 

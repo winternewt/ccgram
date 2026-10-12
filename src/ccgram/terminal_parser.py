@@ -610,6 +610,21 @@ def _collect_status_progress_lines(
     return progress_lines
 
 
+# Claude Code leaves its end-of-turn summary ("✻ Worked for 5s · done 12:30 AM",
+# or just "✻ Cogitated for 42s") in the spinner slot once the turn is over. It
+# carries a spinner glyph but reports a finished turn, not a working one. A live
+# line names no duration after "for" and never ends in "done <clock>".
+_TURN_SUMMARY_RE = re.compile(
+    r"^\S+ for \d+[hms](?:\s+\d+[hms])*$"
+    r"|·\s*done\s+\d{1,2}:\d{2}(?:\s*[AP]M)?$",
+    re.IGNORECASE,
+)
+
+
+def _is_turn_summary(candidate: str) -> bool:
+    return bool(_TURN_SUMMARY_RE.search(candidate[1:].strip()))
+
+
 # Claude Code right-aligns footer notices ("✔ Update installed · Restart to
 # update") above the separator; the spinner line starts at column 0. The
 # threshold is low so narrow panes still count; known spinners never do.
@@ -646,7 +661,7 @@ def _find_status_line_index(lines: list[str], scan_start: int) -> int | None:
             candidate = line.strip()
             if not candidate:
                 continue
-            if is_likely_spinner(candidate[0]):
+            if is_likely_spinner(candidate[0]) and not _is_turn_summary(candidate):
                 return j + 1
             break
     return None
