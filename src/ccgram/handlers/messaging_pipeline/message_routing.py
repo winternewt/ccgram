@@ -27,6 +27,7 @@ from ..interactive import (
 from ..response_builder import build_response_parts
 from ..telegram_origin import consume_telegram_injection
 from .message_queue import enqueue_content_message, get_or_create_queue
+from .plugin_reload import requests_plugin_reload, send_plugin_reload
 
 logger = structlog.get_logger()
 
@@ -197,6 +198,9 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
         _handle_unroutable_message(msg)
         return
 
+    reload_plugins = requests_plugin_reload(msg)
+    reloaded_windows: set[str] = set()
+
     for user_id, window_id, thread_id, chat_id in active_users:
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(
@@ -277,5 +281,21 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
                 source_session_id=msg.session_id,
                 source_provider_name=msg.provider_name or None,
             )
+
+            notice = None
+            if reload_plugins and window_id not in reloaded_windows:
+                reloaded_windows.add(window_id)
+                notice = await send_plugin_reload(
+                    user_id, window_id, thread_id, chat_id
+                )
+            if notice is not None:
+                await enqueue_content_message(
+                    client=client,
+                    user_id=user_id,
+                    window_id=window_id,
+                    parts=[notice],
+                    thread_id=thread_id,
+                    chat_id=chat_id,
+                )
 
             await _update_window_offset(user_id, window_id)

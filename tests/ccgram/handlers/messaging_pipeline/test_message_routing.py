@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ccgram.handlers.messaging_pipeline import message_routing
+from ccgram.handlers.messaging_pipeline import message_routing, plugin_reload
 from ccgram.handlers.messaging_pipeline.message_routing import handle_new_message
 from ccgram.handlers.telegram_origin import (
     clear_pending_telegram_injections,
@@ -41,6 +41,7 @@ def _make_msg(
 @pytest.fixture(autouse=True)
 def _clear_pending_telegram_injections() -> Iterator[None]:
     clear_pending_telegram_injections()
+    plugin_reload.reset_for_testing()
     for task in message_routing._draft_expiry_tasks.values():
         task.cancel()
     message_routing._draft_expiry_tasks.clear()
@@ -317,3 +318,89 @@ async def test_telegram_echo_is_suppressed_only_for_its_origin_topic(bot, mock_d
 
     mock_deps["eq"].assert_awaited_once()
     assert mock_deps["eq"].call_args.kwargs["user_id"] == 200
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Plugin installed. Run /reload-plugins to activate it.",
+        "Done — run `/reload-plugins` and the skill appears.",
+        "RUN /reload-plugins",
+    ],
+)
+async def test_reload_request_types_command_into_window(bot, mock_deps, text):
+    with patch(
+        "ccgram.handlers.messaging_pipeline.plugin_reload.send_telegram_to_window",
+        new=AsyncMock(return_value=(True, "")),
+    ) as send:
+        await handle_new_message(_make_msg(text=text, provider_name="claude"), bot)
+
+    send.assert_awaited_once_with(100, "@5", 42, "/reload-plugins", -100)
+    notices = [c.kwargs["parts"] for c in mock_deps["eq"].await_args_list]
+    assert notices == [["parts"], ["⚡ Auto-sent /reload-plugins"]]
+
+
+@pytest.mark.parametrize(
+    ("text", "overrides"),
+    [
+        ("Run /reload-plugins", {"provider_name": "codex"}),
+        ("Run /reload-plugins", {"content_type": "thinking"}),
+        ("Run /reload-plugins", {"role": "user"}),
+        ("/reload-plugins reloads plugins", {}),
+        ("run /reload-pluginsx", {}),
+    ],
+)
+async def test_reload_not_sent_without_a_claude_answer_asking(
+    bot, mock_deps, text, overrides
+):
+    msg = _make_msg(text=text, **({"provider_name": "claude"} | overrides))
+    with patch(
+        "ccgram.handlers.messaging_pipeline.plugin_reload.send_telegram_to_window",
+        new=AsyncMock(return_value=(True, "")),
+    ) as send:
+        await handle_new_message(msg, bot)
+
+    send.assert_not_awaited()
+
+
+async def test_reload_sent_once_per_window_for_several_bindings(bot, mock_deps):
+    mock_deps["sq"].find_users_for_session.return_value = [
+        (100, "@5", 42, -100),
+        (101, "@5", 43, -100),
+    ]
+    with patch(
+        "ccgram.handlers.messaging_pipeline.plugin_reload.send_telegram_to_window",
+        new=AsyncMock(return_value=(True, "")),
+    ) as send:
+        await handle_new_message(
+            _make_msg(text="Run /reload-plugins", provider_name="claude"), bot
+        )
+
+    assert send.await_count == 1
+
+
+async def test_reload_delivery_failure_is_reported(bot, mock_deps):
+    with patch(
+        "ccgram.handlers.messaging_pipeline.plugin_reload.send_telegram_to_window",
+        new=AsyncMock(return_value=(False, "Agent exited")),
+    ):
+        await handle_new_message(
+            _make_msg(text="Run /reload-plugins", provider_name="claude"), bot
+        )
+
+    last = mock_deps["eq"].await_args_list[-1].kwargs["parts"]
+    assert last == ["❌ Could not auto-send /reload-plugins: Agent exited"]
+
+
+async def test_reload_repeat_within_cooldown_is_not_resent(bot, mock_deps):
+    msg = _make_msg(text="Run /reload-plugins", provider_name="claude")
+    with patch(
+        "ccgram.handlers.messaging_pipeline.plugin_reload.send_telegram_to_window",
+        new=AsyncMock(return_value=(True, "")),
+    ) as send:
+        await handle_new_message(msg, bot)
+        await handle_new_message(msg, bot)
+
+    assert send.await_count == 1
+    notices = [c.kwargs["parts"] for c in mock_deps["eq"].await_args_list]
+    assert notices.count(["⚡ Auto-sent /reload-plugins"]) == 1
