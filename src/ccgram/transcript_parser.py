@@ -172,6 +172,33 @@ class TranscriptParser:
         r"teammate-message|agent-message|cross-session-message|task-notification)"
     )
 
+    # Claude Code appends this trust notice to every message relayed from a
+    # peer session. It is addressed to the model, so it is noise in a topic.
+    _RE_PEER_NOTICE = re.compile(
+        r"\s*This came from another Claude session — .*?(?=\n\s*\n|\Z)",
+        re.DOTALL,
+    )
+
+    # A peer session's message: the header Claude Code puts before it, the
+    # wrapper, and the sender name that is the only useful attribute.
+    _RE_PEER_MESSAGE = re.compile(
+        r"(?:Another Claude session sent a message:\s*)?"
+        r"<cross-session-message\b([^>]*)>\s*(.*?)\s*</cross-session-message>",
+        re.DOTALL,
+    )
+    _RE_PEER_NAME = re.compile(r'from-name="([^"]*)"')
+
+    @classmethod
+    def _render_peer_messages(cls, text: str) -> str:
+        """Replace each wrapped peer message with ``📨 <sender>:`` and its body."""
+
+        def render(match: re.Match[str]) -> str:
+            name = cls._RE_PEER_NAME.search(match.group(1))
+            sender = name.group(1) if name and name.group(1) else "Peer session"
+            return f"📨 {sender}:\n{match.group(2)}"
+
+        return cls._RE_PEER_MESSAGE.sub(render, text)
+
     @staticmethod
     def _format_edit_diff(old_string: str, new_string: str) -> str:
         """Generate a compact unified diff between old_string and new_string."""
@@ -695,24 +722,27 @@ class TranscriptParser:
                     entries.append(entry)
 
             elif btype == "text":
-                t = cls._RE_ANSI.sub("", block.get("text", "")).strip()
+                t = cls._render_peer_messages(
+                    cls._RE_ANSI.sub("", block.get("text", "")).strip()
+                )
                 if t and not cls._RE_SYSTEM_TAGS.search(t):
                     user_text_parts.append(t)
 
         # Emit user text only if present and not local-command XML
-        if user_text_parts:
-            combined = "\n".join(user_text_parts)
-            if not cls._RE_LOCAL_STDOUT.search(
-                combined
-            ) and not cls._RE_COMMAND_NAME.search(combined):
-                entries.append(
-                    ParsedEntry(
-                        role="user",
-                        text=combined,
-                        content_type="text",
-                        timestamp=timestamp,
-                    )
+        combined = cls._RE_PEER_NOTICE.sub("", "\n".join(user_text_parts)).strip()
+        if (
+            combined
+            and not cls._RE_LOCAL_STDOUT.search(combined)
+            and not cls._RE_COMMAND_NAME.search(combined)
+        ):
+            entries.append(
+                ParsedEntry(
+                    role="user",
+                    text=combined,
+                    content_type="text",
+                    timestamp=timestamp,
                 )
+            )
 
         return entries
 
