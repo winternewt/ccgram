@@ -56,6 +56,7 @@ CC_BUILTINS: dict[str, str] = {
     "rc": "↗ Start remote control (alias)",
     "recap": "↗ Summarize current session",
     "release-notes": "↗ View changelog",
+    "reload-plugins": "↗ Reload plugins without restarting",
     "remote-control": "↗ Start remote control session",
     "review": "↗ Review pull request locally",
     "rewind": "↗ Rewind conversation or code",
