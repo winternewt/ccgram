@@ -79,6 +79,9 @@ _BACKOFF_MAX = 30.0
 _SKIP_RETRY_BASE_SECONDS = 2.0
 _SKIP_RETRY_MAX_SECONDS = 60.0
 _MSG_PREVIEW_LENGTH = 80
+# A watermark held by the same fence this long is journaled once with the
+# fence's state, so a wedge names its cause instead of only its symptom.
+_FENCE_DIAGNOSTIC_SECONDS = 120.0
 
 # SessionStart sources whose transcript starts empty. "resume" and "compact"
 # replay earlier turns into the new file, which a topic must not receive again.
@@ -139,6 +142,8 @@ class SessionMonitor:
         # Receipts are grouped by transcript session so one failed send only
         # freezes its own watermark.
         self._delivery_receipts: dict[str, list[DeliveryReceipt]] = {}
+        # session_id -> (fence key, first seen monotonic, already journaled)
+        self._fence_seen: dict[str, tuple[object, float, bool]] = {}
         # Backlog skips cross the monitor/queue boundary through injected
         # adapters, preserving this module's handler independence.
         self._skip_purge_callback: (
@@ -180,8 +185,27 @@ class SessionMonitor:
     def _discard_session_delivery_state(self, session_id: str) -> None:
         """Drop receipts tied to a session identity that no longer exists."""
         self._delivery_receipts.pop(session_id, None)
+        self._fence_seen.pop(session_id, None)
         self._skip_notice_receipts.pop(session_id, None)
         self._clear_skip_retry(session_id)
+
+    def _note_fence(self, session_id: str, key: object, **details: Any) -> None:
+        """Journal a fence that has held one session's watermark too long."""
+        now = time.monotonic()
+        seen = self._fence_seen.get(session_id)
+        if seen is None or seen[0] != key:
+            self._fence_seen[session_id] = (key, now, False)
+            return
+        _, since, journaled = seen
+        if journaled or now - since < _FENCE_DIAGNOSTIC_SECONDS:
+            return
+        self._fence_seen[session_id] = (key, since, True)
+        logger.warning(
+            "Delivery watermark held by one fence",
+            session_id=session_id,
+            held_seconds=round(now - since),
+            **details,
+        )
 
     def set_message_callback(
         self, callback: Callable[[NewMessage], Awaitable[None]]
@@ -513,16 +537,37 @@ class SessionMonitor:
         consumed: dict[str, int] = {}
         self._commit_pending_skips()
         for session_id, receipts in self._delivery_receipts.items():
-            if (
-                not receipts
-                or session_id in self.state.pending_skips
-                or session_id in self._pending_tools
-            ):
+            if not receipts or session_id in self.state.pending_skips:
+                self._fence_seen.pop(session_id, None)
+                continue
+            if session_id in self._pending_tools:
+                tools = self._pending_tools[session_id]
+                self._note_fence(
+                    session_id,
+                    ("tools", frozenset(tools)),
+                    fence="pending_tools",
+                    tool_ids=sorted(tools)[:5],
+                    tool_count=len(tools),
+                )
                 continue
             prefix = settled_prefix(receipts)
+            fence = receipts[len(prefix)] if len(prefix) < len(receipts) else None
+            if fence is None:
+                self._fence_seen.pop(session_id, None)
+            else:
+                self._note_fence(
+                    session_id,
+                    ("receipt", id(fence)),
+                    fence="receipt",
+                    checkpoint=fence.checkpoint,
+                    pending=fence._pending,
+                    closed=fence._closed,
+                    failed=fence.failed,
+                    queued_receipts=len(receipts),
+                    settled_before=len(prefix),
+                )
             if not prefix:
                 continue
-            fence = receipts[len(prefix)] if len(prefix) < len(receipts) else None
             offset = settled_run_offset(prefix, fence)
             if offset is not None:
                 delivered_offsets[session_id] = offset

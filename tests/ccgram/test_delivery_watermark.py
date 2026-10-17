@@ -225,3 +225,49 @@ def test_settled_prefix_before_failure_commits(tmp_path):
 
     assert tracked.last_byte_offset == 50
     assert monitor._delivery_receipts["s1"] == [failed]
+
+
+def test_long_held_receipt_fence_is_journaled_once(tmp_path):
+    """A wedge names its fence: one warning with the receipt's state."""
+    from structlog.testing import capture_logs
+
+    from ccgram import session_monitor as sm
+    from ccgram.session_monitor import SessionMonitor
+
+    monitor = SessionMonitor(projects_path=tmp_path, state_file=tmp_path / "ms.json")
+    monitor.state.update_session(
+        TrackedSession(
+            session_id="s1", file_path="/x", last_byte_offset=10, parsed_offset=50
+        )
+    )
+    fence = DeliveryReceipt(checkpoint=50)
+    fence.track()
+    fence.close()
+    fence.settle(DeliveryOutcome.FAILED)
+    monitor._delivery_receipts["s1"] = [fence]
+
+    clock = [1000.0]
+    with (
+        patch.object(sm.time, "monotonic", side_effect=lambda: clock[0]),
+        capture_logs() as logs,
+    ):
+        monitor.commit_delivered_watermarks()
+        clock[0] += sm._FENCE_DIAGNOSTIC_SECONDS - 1
+        monitor.commit_delivered_watermarks()
+        assert not [
+            e for e in logs if e["event"] == "Delivery watermark held by one fence"
+        ]
+        clock[0] += 2
+        monitor.commit_delivered_watermarks()
+        clock[0] += 600
+        monitor.commit_delivered_watermarks()
+
+    held = [e for e in logs if e["event"] == "Delivery watermark held by one fence"]
+    assert len(held) == 1
+    assert held[0]["fence"] == "receipt"
+    assert (held[0]["checkpoint"], held[0]["pending"], held[0]["closed"]) == (
+        50,
+        0,
+        True,
+    )
+    assert held[0]["failed"] is True

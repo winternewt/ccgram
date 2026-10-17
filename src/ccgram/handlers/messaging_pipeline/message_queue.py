@@ -93,6 +93,7 @@ _QUEUE_RETRY_BACKOFF_BASE_SECONDS = 2.0
 _QUEUE_RETRY_BACKOFF_MAX_SECONDS = 60.0
 _QUEUE_RETRY_JITTER_MAX_SECONDS = 1.0
 _QUEUE_RETRY_BUDGET_SECONDS = 300.0
+_FAILED_PREVIEW_LENGTH = 80
 _QUEUE_RATE_LIMIT_LOG_COOLDOWN_SECONDS = 30.0
 
 # Per-user message queues and worker tasks
@@ -885,6 +886,21 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
                     getattr(task, "thread_id", None),
                 )
             finally:
+                if outcome is DeliveryOutcome.FAILED and isinstance(
+                    retry_state.task, ContentTask
+                ):
+                    failed_task = retry_state.task
+                    logger.warning(
+                        "Content delivery failed; its transcript watermark stays fenced",
+                        user_id=user_id,
+                        window_id=failed_task.window_id,
+                        content_type=failed_task.content_type,
+                        tool_name=failed_task.tool_name,
+                        is_text_batch=failed_task.is_text_batch,
+                        preview=(failed_task.parts[0] if failed_task.parts else "")[
+                            :_FAILED_PREVIEW_LENGTH
+                        ],
+                    )
                 for receipt in _delivery_receipts_for_settlement(
                     retry_state.task, retry_state.merged_receipts
                 ):
