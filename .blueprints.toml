@@ -3,8 +3,9 @@
 id = "ccgram"
 
 [seat.downstream]
-# The desk's secretary relays the person's answers; its message wakes an idle seat (D83, D110).
-wake_from = "*/secretary"
+# The desk's secretary relays the person's answers, and the kit's admin asks the seat directly (its
+# avatar, its account); a message from either wakes an idle seat (D83, D110).
+wake_from = "*/secretary agents-kit/admin"
 
 [seat.downstream.zulip]
 pool = "~/.config/agent-seat-blueprints/zulip/pool"
