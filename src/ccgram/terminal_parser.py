@@ -490,7 +490,10 @@ STATUS_SPINNERS = frozenset(["·", "✻", "✽", "✶", "✳", "✢"])
 _BRAILLE_START = 0x2800
 _BRAILLE_END = 0x28FF
 _NON_SPINNER_RANGES = ((0x2500, 0x257F),)  # box-drawing characters
-_NON_SPINNER_CHARS = frozenset("─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬>|+<=~")
+# ⎿ (U+23BF, category So) is Claude Code's tool-output connector, never a
+# spinner: a command result such as "⎿ Reloaded: 2 plugins · …" must not
+# read as a working status.
+_NON_SPINNER_CHARS = frozenset("─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬>|+<=~⎿")
 
 # Unicode categories that spinner characters typically belong to.
 # So = Symbol Other (✻, ✽, ✶, ✳, ✢, ☐, ✔, ☒)

@@ -59,6 +59,9 @@ class TestIsLikelySpinner:
     def test_non_spinners_common(self, char: str):
         assert is_likely_spinner(char) is False
 
+    def test_tool_output_connector_is_not_spinner(self):
+        assert is_likely_spinner("⎿") is False
+
     def test_math_symbol_detected(self):
         assert is_likely_spinner("∑") is True
 
@@ -202,6 +205,26 @@ class TestParseStatusLine:
             f"{_SEPARATOR}\n"
         )
         assert parse_status_line(pane) == "Reading file"
+
+    # Captured from a live Claude Code pane after /reload-plugins: the wrapped
+    # result line is indented like a footer notice, which left the ⎿ line in
+    # the spinner slot and kept the topic "working" while the session idled.
+    def test_local_command_result_is_not_status(self):
+        pane = (
+            "✻ Cooked for 55s · done 4:59 AM\n"
+            "\n"
+            "❯ /reload-plugins\n"
+            "  ⎿  Reloaded: 2 plugins · 6 skills · 6 agents · 8 hooks · 0\n"
+            "     plugin MCP servers · 0 plugin LSP servers\n"
+            "\n"
+            f"{_SEPARATOR}\n"
+            "❯\n"
+            f"{_SEPARATOR}\n"
+            "  ⏵⏵ auto mode on (shift+tab to cycle)\n"
+            "                       new task? /clear to save 141.8k tokens\n"
+        )
+        assert parse_status_line(pane) is None
+        assert parse_status_block(pane) is None
 
     def test_indented_known_spinner_is_still_status(self):
         pane = f"output\n      ⠋ Loading modules\n{_SEPARATOR}\n"
