@@ -9,6 +9,7 @@ Key function: convert_to_entities(text) → (str, list[MessageEntity]).
 
 import re
 
+import structlog
 from telegram import MessageEntity as TelegramEntity
 
 from telegramify_markdown import config as _tm_config
@@ -17,6 +18,8 @@ from telegramify_markdown import utf16_len as _utf16_len
 from telegramify_markdown.entity import MessageEntity as _LibEntity
 
 from .expandable_quote import EXPANDABLE_QUOTE_END, EXPANDABLE_QUOTE_START
+
+logger = structlog.get_logger()
 
 # Disable auto-promotion of long blockquotes to expandable blockquotes —
 # ccgram manages expandable quotes exclusively through sentinel tokens.
@@ -112,6 +115,15 @@ def _convert_segment(text: str) -> tuple[str, list[TelegramEntity]]:
     """Convert a markdown segment (no expandable quote sentinels) to entities."""
     preprocessed = _strip_indented_code_blocks(text)
     plain, lib_entities = _tm_convert(preprocessed)
+    if preprocessed.strip() and not plain.strip():
+        # telegramify-markdown >= 1.3 with pyromark 0.10 renders any text
+        # holding a "$" as nothing. Dropping the text would lose the message
+        # and fence its transcript watermark, so send it unformatted instead.
+        logger.warning(
+            "Markdown converter returned empty text; sending unformatted",
+            length=len(text),
+        )
+        return text, []
     tg_entities = [_lib_entity_to_telegram(e) for e in lib_entities]
     return plain, tg_entities
 

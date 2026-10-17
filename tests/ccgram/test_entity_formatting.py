@@ -293,3 +293,19 @@ class TestExpandableQuoteTruncation:
         text = "x" * _EXPANDABLE_QUOTE_MAX_CHARS
         result = format_expandable_quote(text)
         assert "truncated" not in result
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "💻 **bash**: `sed -n '/^\\[secretary\\]/,$p' notes.md`",
+        "echo $PATH",
+        "costs $5 or $6",
+    ],
+)
+def test_dollar_text_is_never_rendered_empty(text):
+    """A "$" must not erase the message (telegramify >= 1.3 + pyromark 0.10)."""
+    plain, _ = convert_to_entities(text)
+
+    assert "$" in plain
+    assert set(plain.split()) >= {w for w in text.split() if w.isalpha()}
