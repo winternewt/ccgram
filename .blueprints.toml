@@ -1,0 +1,15 @@
+[repo]
+# The repository's channel takes this name too; the seats talk in agent-chat and announcements (D104).
+id = "ccgram"
+
+[seat.downstream]
+# The desk's secretary relays the person's answers; its message wakes an idle seat (D83, D110).
+wake_from = "*/secretary"
+
+[seat.downstream.zulip]
+pool = "~/.config/agent-seat-blueprints/zulip/pool"
+
+# The upstream's trunk and tags as watcher lines (the kit's watch-remote.sh --remote, #26; a `kit:` word
+# is a path in the kit's own copy, #50). Only a `tag v* pushed` line is acted on (the priming).
+[seat.downstream.watch.upstream]
+cmd = "sh kit:drivers/git/watch-remote.sh --remote upstream"
