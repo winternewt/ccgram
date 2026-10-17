@@ -897,6 +897,7 @@ async def _message_queue_worker(client: TelegramClient, user_id: int) -> None:
                         content_type=failed_task.content_type,
                         tool_name=failed_task.tool_name,
                         is_text_batch=failed_task.is_text_batch,
+                        batch_eligible=is_batch_eligible(failed_task),
                         preview=(failed_task.parts[0] if failed_task.parts else "")[
                             :_FAILED_PREVIEW_LENGTH
                         ],

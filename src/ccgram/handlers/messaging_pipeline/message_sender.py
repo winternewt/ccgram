@@ -153,6 +153,9 @@ async def _with_entity_fallback(
     plain_text, entities = convert_to_entities(text)
 
     if not plain_text.strip():
+        logger.warning(
+            "Nothing to %s: text renders empty", context_label, raw_length=len(text)
+        )
         return None
 
     plain_text, entities = _cap_to_telegram_limit(plain_text, entities)
@@ -206,6 +209,7 @@ async def _send_formatted_with_fallback(
     """Send already-rendered text and entities with the normal plain fallback."""
     kwargs.setdefault("link_preview_options", NO_LINK_PREVIEW)
     if not plain_text.strip():
+        logger.warning("Nothing to send to %s: text renders empty", chat_id)
         return None
 
     plain_text, entities = _cap_to_telegram_limit(plain_text, entities)
@@ -227,6 +231,7 @@ async def _send_formatted_with_fallback(
             raise
         except TelegramError as exc:
             if is_thread_gone(exc):
+                logger.warning("Topic gone; cannot send to %s: %s", chat_id, exc)
                 return None
             last_error = exc
 

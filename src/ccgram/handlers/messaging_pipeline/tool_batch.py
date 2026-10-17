@@ -372,6 +372,12 @@ async def _send_or_edit_batch(
                 client, chat_id, batch_text, message_thread_id=raw_thread_id
             )
             if msg is None:
+                logger.warning(
+                    "Ephemeral tool batch send failed",
+                    window_id=batch.window_id,
+                    entries=len(batch.entries),
+                    text_length=len(batch_text),
+                )
                 return False
             batch.telegram_msg_id = msg.message_id
             batch.last_sent_text = batch_text
@@ -381,6 +387,12 @@ async def _send_or_edit_batch(
         )
         if success:
             batch.last_sent_text = batch_text
+        else:
+            logger.warning(
+                "Ephemeral tool batch edit failed",
+                window_id=batch.window_id,
+                message_id=batch.telegram_msg_id,
+            )
         return success
 
     if batch.draft is None:
@@ -402,11 +414,16 @@ async def _send_or_edit_batch(
             batch.last_sent_text = batch_text
             return True
         batch.draft = None
+        logger.warning(
+            "Tool batch message could not be opened", window_id=batch.window_id
+        )
         return False
 
     delivered = await batch.draft.replace_confirmed(batch_text)
     if delivered:
         batch.last_sent_text = batch_text
+    else:
+        logger.warning("Tool batch message edit unconfirmed", window_id=batch.window_id)
     return delivered
 
 
