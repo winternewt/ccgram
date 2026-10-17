@@ -119,7 +119,9 @@ After adopting a kit release (`bin/move-to-tag vX`), the seat reloads its own se
 answer with that line: the last line, nothing else on it, no backticks. It is written only when
 move-to-tag prints its "left for the person: /reload-plugins" line, never otherwise. If no reload
 follows, the person is asked to type it. The person, 2026-10-17: "you can do it yourself now thanks
-to ccgram hook"; the desk's secretary and the kit's tooling seat on this machine do the same. The
+to ccgram hook". It holds where the bridge runs, not in the kit; the machine's own global
+instructions carry it for every session there, and the desk's secretary and the kit's tooling seat
+do the same. The
 same words anywhere else in an answer fire it too: quoting the command, write it without "run" in
 front.
 
