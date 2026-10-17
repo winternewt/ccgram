@@ -154,7 +154,7 @@ Top-level (constants, leaves, top-level commands):
 
 - `message_queue.py` — per-user FIFO + worker; merge, status dedup, tool-use batching. Worker takes `client: TelegramClient`.
 - `message_routing.py` — routes new assistant messages from SessionMonitor to Telegram topics.
-- `plugin_reload.py` — when a complete Claude answer says "run /reload-plugins", `message_routing` types `/reload-plugins` into the pane through `send_telegram_to_window` (once per window per message) and posts a `⚡ Auto-sent` notice to the topic.
+- `plugin_reload.py` — when a complete Claude answer written within the last 2 minutes says "run /reload-plugins" (re-read answers after a restart never qualify), `message_routing` types `/reload-plugins` into the pane through `send_telegram_to_window` (once per window per message) and posts a `⚡ Auto-sent` notice to the topic.
 - `message_sender.py` — `safe_reply`/`safe_edit`/`safe_send`, `rate_limit_send_message`, `edit_with_fallback`. All take `client: TelegramClient`.
 - `message_task.py` — dependency-free sum type (`ContentTask`, `StatusTask`, `ToolResultTask`) shared by queue, tool_batch, status_bubble.
 - `tool_batch.py` — Claude tool-use batching: state machine, formatting, edit-in-place. Uses `unwrap_bot(client)` for `DraftStream`.

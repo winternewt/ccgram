@@ -792,6 +792,7 @@ class TranscriptReader:
                 role=entry.role,
                 tool_name=entry.tool_name,
                 provider_name=provider.capabilities.name,
+                timestamp=entry.timestamp,
             )
             for entry in agent_messages
             if entry.text

@@ -9,6 +9,7 @@ to retype it.
 
 import re
 import time
+from datetime import UTC, datetime
 
 import structlog
 
@@ -27,15 +28,34 @@ _RELOAD_REQUEST = re.compile(r"\brun\s+`?/reload-plugins\b", re.IGNORECASE)
 RELOAD_COOLDOWN_SECONDS = 60.0
 _last_sent: dict[str, float] = {}
 
+# A restart re-reads transcript entries it cannot prove reached Telegram,
+# including answers whose reload already happened. Only an answer written
+# this recently is a live request; an undated one is never acted on.
+RELOAD_MAX_AGE_SECONDS = 120.0
+
+
+def _is_fresh(timestamp: str | None) -> bool:
+    if not timestamp:
+        return False
+    try:
+        written = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return False
+    if written.tzinfo is None:
+        return False
+    age = (datetime.now(UTC) - written).total_seconds()
+    return age <= RELOAD_MAX_AGE_SECONDS
+
 
 def requests_plugin_reload(msg: NewMessage) -> bool:
-    """Whether *msg* is a complete Claude answer asking to run /reload-plugins."""
+    """Whether *msg* is a fresh, complete Claude answer asking to run /reload-plugins."""
     return (
         msg.is_complete
         and msg.role == "assistant"
         and msg.content_type == "text"
         and msg.provider_name == "claude"
         and _RELOAD_REQUEST.search(msg.text) is not None
+        and _is_fresh(msg.timestamp)
     )
 
 

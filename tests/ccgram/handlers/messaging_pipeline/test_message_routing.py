@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,6 +12,8 @@ from ccgram.handlers.telegram_origin import (
     remember_telegram_injection,
 )
 from ccgram.session_monitor import NewMessage
+
+_LIVE: str | None = "live"  # sentinel: stamp the message as written now
 
 
 def _make_msg(
@@ -24,7 +27,10 @@ def _make_msg(
     is_complete: bool = True,
     session_id: str = "sess-1",
     provider_name: str = "",
+    timestamp: str | None = _LIVE,
 ) -> NewMessage:
+    if timestamp is _LIVE:
+        timestamp = datetime.now(UTC).isoformat()
     return NewMessage(
         session_id=session_id,
         text=text,
@@ -35,6 +41,7 @@ def _make_msg(
         role=role,
         is_complete=is_complete,
         provider_name=provider_name,
+        timestamp=timestamp,
     )
 
 
@@ -361,6 +368,52 @@ async def test_reload_not_sent_without_a_claude_answer_asking(
         await handle_new_message(msg, bot)
 
     send.assert_not_awaited()
+
+
+def _minutes_ago(minutes: float) -> str:
+    return (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        pytest.param(None, id="undated"),
+        pytest.param("not a time", id="unparseable"),
+        pytest.param(datetime.now().replace(tzinfo=None).isoformat(), id="naive-local"),
+        pytest.param(
+            _minutes_ago(plugin_reload.RELOAD_MAX_AGE_SECONDS / 60 + 1),
+            id="re-read-after-restart",
+        ),
+    ],
+)
+async def test_reload_not_sent_for_stale_or_undated_answer(bot, mock_deps, timestamp):
+    msg = _make_msg(
+        text="Run /reload-plugins", provider_name="claude", timestamp=timestamp
+    )
+    with patch(
+        "ccgram.handlers.messaging_pipeline.plugin_reload.send_telegram_to_window",
+        new=AsyncMock(return_value=(True, "")),
+    ) as send:
+        await handle_new_message(msg, bot)
+
+    send.assert_not_awaited()
+
+
+async def test_reload_sent_for_answer_written_just_now(bot, mock_deps):
+    msg = _make_msg(
+        text="Run /reload-plugins",
+        provider_name="claude",
+        timestamp=(datetime.now(UTC) - timedelta(seconds=5))
+        .isoformat()
+        .replace("+00:00", "Z"),
+    )
+    with patch(
+        "ccgram.handlers.messaging_pipeline.plugin_reload.send_telegram_to_window",
+        new=AsyncMock(return_value=(True, "")),
+    ) as send:
+        await handle_new_message(msg, bot)
+
+    send.assert_awaited_once()
 
 
 async def test_reload_sent_once_per_window_for_several_bindings(bot, mock_deps):
