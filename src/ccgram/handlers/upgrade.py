@@ -25,8 +25,25 @@ logger = structlog.get_logger()
 
 _UPGRADE_TIMEOUT = 90
 
-# Match "Upgraded ccgram v0.2.0 -> v0.2.1" or similar uv output
-_VERSION_RE = re.compile(r"v(\d+\.\d+\S*)\s*$", re.MULTILINE)
+# uv prints "Updated ccgram v0.1.dev862 -> v0.1.dev863" when ccgram itself
+# changed, and only "Modified ccgram environment" plus " + pkg==ver" lines
+# when a dependency moved and ccgram did not.
+_VERSION_RE = re.compile(r"ccgram v\S+ -> v(\S+)")
+_ADDED_PACKAGE_RE = re.compile(r"^ \+ (\S+)", re.MULTILINE)
+
+
+def _upgrade_summary(output: str, current_version: str) -> str:
+    """Say what ``uv tool upgrade`` changed, for the reply and the log."""
+    match = _VERSION_RE.search(output)
+    if match:
+        return f"Upgraded to v{match.group(1)}"
+    packages = _ADDED_PACKAGE_RE.findall(output)
+    if packages:
+        return (
+            f"ccgram v{current_version} unchanged; "
+            f"updated dependencies: {', '.join(packages)}"
+        )
+    return "Upgraded"
 
 
 async def upgrade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -87,14 +104,9 @@ async def upgrade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await safe_edit(msg, f"\u2705 Already up to date (v{__version__}).")
         return
 
-    # Parse new version from uv upgrade output
-    match = _VERSION_RE.search(output)
-    version_text = f"v{match.group(1)}" if match else "new version"
-
-    await safe_edit(msg, f"\u2705 Upgraded to {version_text}. Restarting...")
-    logger.info(
-        "Upgrade complete (%s -> %s), scheduling restart", __version__, version_text
-    )
+    summary = _upgrade_summary(output, __version__)
+    await safe_edit(msg, f"\u2705 {summary}. Restarting...")
+    logger.info("Upgrade complete, scheduling restart", summary=summary)
 
     # Set restart flag and stop the application
     # Lazy: main → bot → handlers/upgrade.  Hoisting forms a hard cycle
