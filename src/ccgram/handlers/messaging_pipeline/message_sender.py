@@ -171,6 +171,7 @@ async def _with_entity_fallback(
             raise
         except TelegramError as e:
             if is_thread_gone(e):
+                logger.warning("Topic gone; cannot %s: %s", context_label, e)
                 return None
             last_error = e
 
@@ -390,7 +391,8 @@ async def _retry_edit_plain(
         return True
     except RetryAfter:
         raise
-    except TelegramError:
+    except TelegramError as exc:
+        logger.warning("Failed to edit message %s: %s", message_id, exc)
         return False
 
 
