@@ -111,6 +111,15 @@ After the person sends `/upgrade`, a setting the old build would refuse (a new v
 with fixed choices) is set only then, or the bot does not start. Proof that it restarted is the log's
 "Starting ccgram" line: the process keeps its id across the re-exec.
 
+## Reloading plugins itself
+
+After adopting a kit release (`bin/move-to-tag vX`), the seat reloads its own session: ccgram types
+`/reload-plugins` into the pane when a complete Claude answer, written in the last two minutes, says
+"run /reload-plugins" (`handlers/messaging_pipeline/plugin_reload.py`). So the seat ends that turn's
+answer with the line `run /reload-plugins`, and leaves nothing for the person to type. The person,
+2026-10-17: "you can do it yourself now thanks to ccgram hook". The same words anywhere else in an
+answer fire it too: quoting the command, write it without "run" in front.
+
 ## Out of this seat
 
 The machine's own setup: the terminal multiplexer's configuration, the person's panes, the system.
