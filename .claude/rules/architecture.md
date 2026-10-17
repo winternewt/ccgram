@@ -125,7 +125,7 @@ Top-level (constants, leaves, top-level commands):
 - `reactions.py` — Telegram message reactions helper (Bot API 7.0+).
 - `registry.py` — central PTB handler registration (`register_all`): `CommandSpec` table + Message/Callback/Inline handler wiring. Documented exception: only handler module with runtime `from telegram.ext` import — the PTB wiring spine.
 - `response_builder.py` — response pagination and formatting.
-- `sessions_dashboard.py` — `/sessions` overview + kill.
+- `sessions_dashboard.py` — `/sessions` overview + kill; a `⏭ Live (N)` button appears on a session with queued transcript messages and, after confirmation, skips that backlog via `SessionMonitor.request_backlog_skip` (no severity threshold, unlike the status-bubble button).
 - `split_command.py` — `/split [command]` — adds a sibling pane to the topic's window via `multiplexer.split_window`; optional arg runs in the new pane (e.g. `/split claude` spawns a sibling agent). New pane surfaced via `/panes`. Backend-neutral.
 - `sync_command.py` — `/sync`.
 - `upgrade.py` — `/upgrade` (`uv tool upgrade` + restart).

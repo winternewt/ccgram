@@ -59,6 +59,8 @@ CB_SESSIONS_REFRESH = "sess:ref"
 CB_SESSIONS_NEW = "sess:new"
 CB_SESSIONS_KILL = "sess:kill:"  # sess:kill:<window_id>
 CB_SESSIONS_KILL_CONFIRM = "sess:killok:"  # sess:killok:<window_id>
+CB_SESSIONS_LIVE = "sess:live:"  # sess:live:<window_id> (jump-to-live prompt)
+CB_SESSIONS_LIVE_CONFIRM = "sess:liveok:"  # sess:liveok:<window_id>
 
 # Status message action buttons
 CB_STATUS_ESC = "st:esc:"  # st:esc:<window_id>

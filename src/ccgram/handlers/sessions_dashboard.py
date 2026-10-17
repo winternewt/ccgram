@@ -2,14 +2,16 @@
 
 Displays a summary of all thread-bound sessions for the current user
 with alive/dead status indicators, per-session action buttons (Esc,
-Screenshot, Kill with two-step confirmation), cwd details, and
-refresh/new-session actions.
+Screenshot, Kill with two-step confirmation, and Live when the topic has
+queued transcript messages), cwd details, and refresh/new-session actions.
 
 Key functions:
   - sessions_command(): /sessions command handler
   - handle_sessions_refresh(): refresh button callback
   - handle_sessions_kill(): first Kill tap — show confirmation
   - handle_sessions_kill_confirm(): second tap — kill and unbind
+  - handle_sessions_live(): first Live tap — show confirmation
+  - handle_sessions_live_confirm(): second tap — skip the queued backlog
 """
 
 from __future__ import annotations
@@ -39,6 +41,8 @@ from ..window_query import view_window
 from .callback_data import (
     CB_SESSIONS_KILL,
     CB_SESSIONS_KILL_CONFIRM,
+    CB_SESSIONS_LIVE,
+    CB_SESSIONS_LIVE_CONFIRM,
     CB_SESSIONS_NEW,
     CB_SESSIONS_REFRESH,
     CB_STATUS_ESC,
@@ -48,6 +52,7 @@ from .callback_helpers import user_owns_window
 from .callback_tokens import compact_callback_data, resolve_callback_data
 from .callback_registry import register
 from .cleanup import clear_topic_state
+from .messaging_pipeline.backlog import get_backlog_snapshot
 from .topics.topic_deletion import cleanup_retired_topics, retire_topic_binding
 from .messaging_pipeline.message_sender import safe_edit, safe_reply, safe_send
 
@@ -93,7 +98,7 @@ async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
 
     lines: list[str] = []
     action_rows: list[list[InlineKeyboardButton]] = []
-    for _thread_id, window_id in sorted(bindings.items()):
+    for thread_id, window_id in sorted(bindings.items()):
         display_name = thread_router.get_display_name(window_id)
         view = view_window(window_id)
         alive = None if live_ids is None else canonical_window_id(window_id) in live_ids
@@ -130,6 +135,18 @@ async def _build_dashboard(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
                     ),
                 ),
             ]
+            queued = get_backlog_snapshot(user_id, window_id, thread_id).pending_count
+            if queued:
+                row.append(
+                    InlineKeyboardButton(
+                        f"\u23ed Live ({queued})",
+                        callback_data=compact_callback_data(
+                            CB_SESSIONS_LIVE,
+                            f"{CB_SESSIONS_LIVE}{window_id}",
+                            window_id,
+                        ),
+                    )
+                )
             action_rows.append(row)
 
     text = "Sessions\n\n" + "\n".join(lines)
@@ -254,6 +271,73 @@ async def handle_sessions_kill_confirm(
     await safe_edit(query, f"{headline} '{display}'\n\n{text}", reply_markup=keyboard)
 
 
+async def handle_sessions_live(
+    query: CallbackQuery, _user_id: int, window_id: str
+) -> None:
+    """First Live tap — show confirmation prompt."""
+    display = thread_router.get_display_name(window_id)
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    f"\u23ed Confirm jump to live: {display}",
+                    callback_data=compact_callback_data(
+                        CB_SESSIONS_LIVE_CONFIRM,
+                        f"{CB_SESSIONS_LIVE_CONFIRM}{window_id}",
+                        window_id,
+                    ),
+                ),
+            ],
+            [_REFRESH_BTN],
+        ]
+    )
+    await safe_edit(
+        query,
+        f"Jump '{display}' to live?\n\nQueued transcript messages for this "
+        "topic are dropped and never sent.",
+        reply_markup=keyboard,
+    )
+
+
+async def handle_sessions_live_confirm(
+    query: CallbackQuery, user_id: int, window_id: str
+) -> str:
+    """Second tap — skip the topic's queued backlog; return the toast text."""
+    # Lazy: session_monitor reaches handler routing through bootstrap callbacks.
+    from ..session_monitor import get_active_monitor
+
+    display = thread_router.get_display_name(window_id)
+    binding = next(
+        (
+            (tid, chat_id)
+            for uid, chat_id, tid, bound_wid in thread_router.iter_thread_bindings_with_chat()
+            if uid == user_id
+            and canonical_window_id(bound_wid) == canonical_window_id(window_id)
+        ),
+        None,
+    )
+    monitor = get_active_monitor()
+    if binding is None or monitor is None:
+        return "Session unavailable"
+    thread_id, bound_chat_id = binding
+    chat_id = bound_chat_id or thread_router.resolve_chat_id(user_id, thread_id)
+    intent = await monitor.request_backlog_skip(user_id, window_id, thread_id, chat_id)
+    text, keyboard = await _build_dashboard(user_id)
+    if intent is None:
+        await safe_edit(query, text, reply_markup=keyboard)
+        return "Backlog changed; try again"
+    logger.info(
+        "sessions_live_confirm: skipped backlog",
+        window_id=window_id,
+        skipped=intent.skipped_count,
+        user_id=user_id,
+    )
+    await safe_edit(
+        query, f"\u23ed Jumped '{display}' to live\n\n{text}", reply_markup=keyboard
+    )
+    return f"Jumping to live ({intent.skipped_count} queued item(s))"
+
+
 async def handle_sessions_new(
     query: CallbackQuery,
     user_id: int,
@@ -296,6 +380,8 @@ async def handle_sessions_new(
     CB_SESSIONS_NEW,
     CB_SESSIONS_KILL_CONFIRM,
     CB_SESSIONS_KILL,
+    CB_SESSIONS_LIVE_CONFIRM,
+    CB_SESSIONS_LIVE,
 )
 async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -317,19 +403,46 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await handle_sessions_new(
             query, user.id, context.user_data, PTBTelegramClient(context.bot)
         )
-    elif data.startswith(CB_SESSIONS_KILL_CONFIRM):
-        window_id = data[len(CB_SESSIONS_KILL_CONFIRM) :]
-        if not user_owns_window(user.id, window_id):
-            await query.answer("Not your session", show_alert=True)
-            return
+    else:
+        await _dispatch_window_action(query, user.id, data, context)
+
+
+# Confirm prefixes first: "sess:kill:" is not a prefix of "sess:killok:", but
+# keeping the longer form first makes that independent of the spelling.
+_WINDOW_ACTION_PREFIXES = (
+    CB_SESSIONS_KILL_CONFIRM,
+    CB_SESSIONS_KILL,
+    CB_SESSIONS_LIVE_CONFIRM,
+    CB_SESSIONS_LIVE,
+)
+
+
+async def _dispatch_window_action(
+    query: CallbackQuery,
+    user_id: int,
+    data: str,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Route a per-session button after checking the user owns its window."""
+    prefix = next((p for p in _WINDOW_ACTION_PREFIXES if data.startswith(p)), None)
+    if prefix is None:
+        return
+    window_id = data[len(prefix) :]
+    if not user_owns_window(user_id, window_id):
+        await query.answer("Not your session", show_alert=True)
+        return
+    if prefix == CB_SESSIONS_KILL_CONFIRM:
         await handle_sessions_kill_confirm(
-            query, user.id, window_id, PTBTelegramClient(context.bot)
+            query, user_id, window_id, PTBTelegramClient(context.bot)
         )
         await query.answer("Killed")
-    elif data.startswith(CB_SESSIONS_KILL):
-        window_id = data[len(CB_SESSIONS_KILL) :]
-        if not user_owns_window(user.id, window_id):
-            await query.answer("Not your session", show_alert=True)
-            return
-        await handle_sessions_kill(query, user.id, window_id)
+    elif prefix == CB_SESSIONS_KILL:
+        await handle_sessions_kill(query, user_id, window_id)
+        await query.answer()
+    elif prefix == CB_SESSIONS_LIVE_CONFIRM:
+        await query.answer(
+            await handle_sessions_live_confirm(query, user_id, window_id)
+        )
+    else:
+        await handle_sessions_live(query, user_id, window_id)
         await query.answer()

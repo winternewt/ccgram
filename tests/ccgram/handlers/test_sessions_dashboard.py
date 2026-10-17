@@ -8,15 +8,18 @@ import pytest
 from telegram import InlineKeyboardMarkup
 
 from ccgram.handlers.callback_data import (
+    CB_SESSIONS_LIVE,
     CB_SESSIONS_NEW,
     CB_SESSIONS_REFRESH,
     CB_STATUS_ESC,
     CB_STATUS_SCREENSHOT,
 )
 from ccgram.handlers.callback_tokens import resolve_callback_data
+from ccgram.handlers.messaging_pipeline.backlog import BacklogSnapshot
 from ccgram.handlers.sessions_dashboard import (
     _build_dashboard,
     handle_sessions_kill_confirm,
+    handle_sessions_live_confirm,
     handle_sessions_refresh,
     sessions_command,
 )
@@ -410,3 +413,67 @@ class TestSessionsNew:
 
         assert client.call_count("send_message") == 0
         assert query.answer.await_args.kwargs.get("show_alert") is True
+
+
+class TestJumpToLive:
+    @staticmethod
+    def _resolved(keyboard: InlineKeyboardMarkup) -> list[str]:
+        return [
+            resolved
+            for data in _callback_data(keyboard)
+            if (resolved := resolve_callback_data(data, 100, lambda _u, _w: True))
+        ]
+
+    async def test_live_button_only_for_a_topic_with_queued_messages(
+        self, deps: SimpleNamespace
+    ) -> None:
+        deps.sessions(
+            windows={10: "@0", 20: "@5"},
+            alive=["@0", "@5"],
+            names={"@0": "busy", "@5": "quiet"},
+        )
+        queued = {"@0": 7, "@5": 0}
+        with patch(
+            "ccgram.handlers.sessions_dashboard.get_backlog_snapshot",
+            side_effect=lambda _u, wid, _t: BacklogSnapshot(queued[wid], 0.0, None),
+        ):
+            _text, keyboard = await _build_dashboard(100)
+
+        live = [d for d in self._resolved(keyboard) if d.startswith(CB_SESSIONS_LIVE)]
+        assert live == [f"{CB_SESSIONS_LIVE}@0"]
+        labels = {btn.text for row in keyboard.inline_keyboard for btn in row}
+        assert "⏭ Live (7)" in labels
+
+    async def test_confirm_skips_backlog_for_the_bound_topic(
+        self, deps: SimpleNamespace
+    ) -> None:
+        deps.sessions(windows={42: "@0"}, alive=["@0"], names={"@0": "desk"})
+        deps.router.iter_thread_bindings_with_chat.return_value = [
+            (999, -1, 7, "@0"),
+            (100, -100, 42, "@0"),
+        ]
+        monitor = MagicMock()
+        monitor.request_backlog_skip = AsyncMock(
+            return_value=SimpleNamespace(skipped_count=12)
+        )
+        query = MagicMock()
+        with (
+            patch("ccgram.session_monitor.get_active_monitor", return_value=monitor),
+            patch("ccgram.handlers.sessions_dashboard.safe_edit", new=AsyncMock()),
+        ):
+            toast = await handle_sessions_live_confirm(query, 100, "@0")
+
+        monitor.request_backlog_skip.assert_awaited_once_with(100, "@0", 42, -100)
+        assert toast == "Jumping to live (12 queued item(s))"
+
+    async def test_confirm_without_a_binding_changes_nothing(
+        self, deps: SimpleNamespace
+    ) -> None:
+        deps.router.iter_thread_bindings_with_chat.return_value = []
+        monitor = MagicMock()
+        monitor.request_backlog_skip = AsyncMock()
+        with patch("ccgram.session_monitor.get_active_monitor", return_value=monitor):
+            toast = await handle_sessions_live_confirm(MagicMock(), 100, "@0")
+
+        monitor.request_backlog_skip.assert_not_awaited()
+        assert toast == "Session unavailable"
