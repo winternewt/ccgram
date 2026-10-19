@@ -16,7 +16,7 @@ State as of 2026-10-17, the first session to hold the seat.
 
 ## Seats kit
 
-- `.claude/settings.local.json` (untracked) pins v0.1.80 (adopted 2026-10-19); the seat reloads
+- `.claude/settings.local.json` (untracked) pins v0.1.81 (adopted 2026-10-19); the seat reloads
   itself (the priming, "Reloading plugins itself"). The adoption pull request is merged, so the kit is trusted and each release
   is adopted on its `announcements` post (`bin/move-to-tag vX` from the plugin's copy, through its
   `bin/py`).
