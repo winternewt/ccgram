@@ -11,7 +11,7 @@ release taken, and the patch table, which counts the fork's own commits on top o
 
 ## Patch table
 
-**Count: 14 open upstream-bound (all unfiled), 6 open local, 0 retired.** Rows: the fork's commits
+**Count: 15 open upstream-bound (all unfiled), 6 open local, 0 retired.** Rows: the fork's commits
 past v4.16.0 touching `src/` or `tests/`, merges excluded, oldest first. Records and plans get no
 row. A fate of "upstream-bound" means the change is not specific to this fork and could be filed;
 none is filed until the person asks (the priming, "Fixes for the upstream"). Fates were first set by
@@ -42,3 +42,4 @@ of an upstream release; then from that merge's base).
 | 900057a | logs the branch behind every silent send failure | none | local | |
 | fd1fb6e | telegramify-markdown >= 1.3 with pyromark 0.10 emptied any text with a `$` | none | upstream-bound | |
 | d3b6c1e | a Live (N) button in `/sessions` to skip a topic's backlog | none | upstream-bound | |
+| 078146e | `ALLOWED_USERS` and `CCGRAM_GROUP_ID` had no way to be found from ccgram itself: `scripts/discover_telegram_ids.py` | none | upstream-bound | |
