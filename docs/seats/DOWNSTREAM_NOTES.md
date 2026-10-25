@@ -28,8 +28,15 @@ reproducible from the steps below.
     120 s single-use pairing code, hashes only at rest. A paired device has full control: it reads
     every session's transcript and panes, pastes text and keys into panes (a shell command in
     effect), creates and kills sessions, uploads files. Note, not a flag while the port is unset.
+  - **Checked by the seat, a blocker for adoption as is:** the session core's `refresh()` runs every
+    second (`session_protocol/runtime.py` `poll`) and, for every target, `_source_version` calls
+    `store.transcript_snapshot`, whose `_transcript_record` reads the **whole** transcript into memory
+    and SHA-256s it, with no stat shortcut; only the re-parse is gated on the stat stamp, so an active
+    session (stamp changing every second) is also re-parsed whole every second. The old host had a
+    190 MB live transcript: that is a 190 MB read, hash and allocation per second per such session.
+    Candidate for an upstream issue (stat first, read only the appended tail), on the person's word.
   - **Always on, even with the API off:** the new session core starts at every launch and polls
-    each bound target every second, reading and hashing its whole transcript; it writes
+    each target every second, as above; it writes
     `protocol.sqlite3` (actions table never pruned) and an uploads folder in ccgram's state
     directory. Note for memory and CPU on a small host.
   - **Two new synchronous Claude hooks, `PermissionRequest` and `PreToolUse`**, installed only by
