@@ -1,8 +1,9 @@
 # Downstream seat — notes
 
-State as of 2026-10-25, written at a host move: the seat stood down on its old host and is taken
-next on the person's workstation. Nothing in flight lives only on the old host; what was there is
-reproducible from the steps below.
+State as of 2026-10-25, written at a host move: the seat stood down on its old host and was taken
+on the person's workstation the same day. Nothing in flight lived only on the old host; what was there
+is reproducible from the steps below. First start there: fetched, `upstream-main` already at
+`upstream/main` (`36a6efa`), no tag past `v4.18.1`.
 
 ## Upstream
 
@@ -85,7 +86,8 @@ reproducible from the steps below.
 
 - The pin in `.claude/settings.local.json` names v0.1.89 (moved 2026-10-25), but on the old host the
   install record stayed at 0.1.87: the machine-wide marketplace record kept the old ref. Filed as the
-  kit's #155. On the new host, check the installed version after the first start.
+  kit's #155. On the new host the install record is 0.1.89 and the watchdog runs it (checked
+  2026-10-25); that clone has no `.claude/settings.local.json`, so no pin is set there yet.
 
 ## Carried from the old host's memory (it does not travel)
 
