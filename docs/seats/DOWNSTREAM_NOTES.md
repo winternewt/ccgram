@@ -148,10 +148,16 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 - The bot runs on another host; its service logs come from that host's sysadmin seat, by direct
   message with a window and what is sought (it replies with an excerpt, newest 200 lines at most).
   `wake_from` carries `*/sysadmin` so its replies wake this seat.
-- Seen there 2026-10-25: "Complete assistant message has no routed topic; dropped" for two sessions.
-  That warning is upstream's (#288, `message_routing._handle_unroutable_message`), made for a
-  tracked session whose topic binding lags (after a restart or an adoption) or is absent. Not
-  looked into yet; first ask whether those sessions had a topic at that time.
+- Seen there 2026-10-25: "Complete assistant message has no routed topic; dropped", 146 times
+  from 02:39Z to 13:40Z: no topic was opened for any session after the reboot. Root cause (traced by
+  the sysadmin seat, confirmed by this seat in the fork and unchanged in `v4.18.4`):
+  `topic_orchestration.collect_target_chats` finds chats only through bindings and
+  `group_chat_ids`, which are keyed per topic and popped on unbind; the last two topics were deleted
+  by the dead-session cleanup before the reboot, so the set was empty, `CCGRAM_GROUP_ID` is unset
+  there, and the empty case logs at debug only. `/sync` never records its chat, so its Fix does
+  nothing; startup's "adopted N" counts attempts. No upstream issue. Workaround, the person's:
+  `CCGRAM_GROUP_ID` in the bot's env file and a restart. Code fix: on the person's desk (#138),
+  default none.
 
 ## Seats kit
 
