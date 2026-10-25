@@ -15,7 +15,7 @@ release taken, and the patch table, which counts the fork's own commits on top o
 
 ## Patch table
 
-**Count: 18 open upstream-bound (all unfiled), 6 open local, 0 retired.** Rows: the fork's commits
+**Count: 19 open upstream-bound (all unfiled), 6 open local, 0 retired.** Rows: the fork's commits
 past v4.16.0 touching `src/` or `tests/`, merges excluded, oldest first. Records and plans get no
 row. A fate of "upstream-bound" means the change is not specific to this fork and could be filed;
 none is filed until the person asks (the priming, "Fixes for the upstream"). Fates were first set by
@@ -50,3 +50,4 @@ Check against git: `git log --no-merges --oneline <last release merged>..main --
 | c57605d | the session core read and hashed every transcript whole each second: an unchanged one is no longer read, a grown one reads only its tail | none (issue drafted for the person) | upstream-bound | |
 | 3154319 | a busy session's transcript was decoded and rebuilt whole on every change (about 7 s per change at 343 MB): only appended lines are parsed, and the store keeps no copy of the file (fixes c57605d's memo, which did) | none (issue drafted for the person) | upstream-bound | |
 | 92675e6 | the parsed messages of a session left unchanged for five minutes were dropped, so its next line cost a whole re-parse (fixes 3154319) | none (with the issue for 3154319) | upstream-bound | |
+| 10f5605 | people who posted before `discover_telegram_ids.py` ran could not be found; it now reads forwarded messages | none | upstream-bound | |
