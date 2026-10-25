@@ -9,7 +9,7 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 - Last release taken: `v4.16.0`, by replay. `main` is still on it (plus the fork's own commits, the
   last `5b01e00`).
-- **Waiting: v4.17.0, v4.18.0, v4.18.1**, read as one delta from `v4.16.0` (277 files, about 13.6k
+- **Waiting: v4.17.0, v4.18.0, v4.18.1, v4.18.2**, read as one delta from `v4.16.0` (277 files, about 13.6k
   lines outside tests). `upstream-main` on `origin` is at `36a6efa` (= `v4.18.1`).
 - **Gate, read-in-full pass: done** by three Opus readers split by area (2026-10-25), every hunk of
   the delta read but about 550 lines of the deleted `transcript_parser.py`'s tail, scanned (deleted
@@ -82,6 +82,25 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
     Checked: the delta's added lines under `src/` and `scripts/` carry no URL literal and no new HTTP
     client use beyond the loopback API and the conformance client; no new process spawn
     (`worktrees.py` is the old `handlers/topics/worktree.py` moved, one `except` widened).
+- **v4.18.2** (tagged 2026-10-25, `2a19f3f`; `upstream-main` on `origin` moved to it): its delta from
+  `v4.18.1` (21 files, about 1.4k lines) read in full by an Opus reader, checked by the seat. No new
+  host, dependency, lock change, secret read, conftest, Makefile or `.claude/` change. Verdicts:
+  - archfit: the action pin moves to `cadf35c`, the engine to v3.2.0 with a new image digest, and
+    `.archfit.yaml`'s module map (the data uploaded) grows; endpoint, audience and triggers unchanged.
+    The new action commit and image were not read: either option on desk #128 keeps the job from
+    running on this fork, so neither needs reading. No new flag.
+  - `scripts/smoke_agent_relay.py` (new): a manual harness that starts a real agent CLI through
+    agterm; it refuses unless `AGTERM_ENABLED=1`, and nothing in the Makefile or CI runs it.
+  - `handlers/upgrade.py`: still `uv tool upgrade ccgram`, the restart still `os.execv`, now through
+    a callback in `bot_data`. Conflicts with the fork's 7c3bf9a (the dependency-only summary): keep
+    both.
+  - `session_protocol/messages.py` filters harder: Claude's `_claude()` now drops `isMeta`,
+    `isSidechain` and **`isCompactSummary`** records before parsing, so the fold of 91adafb must turn a
+    compaction summary into its notice **before** that drop; check whether a `<cross-session-message>`
+    entry is `isMeta` for the fold of 06908db. Codex drops `system` role messages and user text
+    opening with its injected context tags. The summarizer sends less transcript text, never more.
+  - The whole-transcript read each second (#131) is untouched: the store is not in the delta.
+  - When the desk answers, the merge takes `v4.18.2`, not `v4.18.1`.
 - **Trial merge** (a detached worktree at `v4.18.1`, `git merge --no-commit main`): no fork commit
   taken verbatim (`git cherry` shows none). 7 conflicts:
   - `transcript_parser.py` and its test deleted upstream (the parsing moved, rewritten, to
