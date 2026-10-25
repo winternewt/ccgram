@@ -133,11 +133,16 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
     `raw=`: the fork's `messaging_pipeline/plugin_reload.py` calls it without one and would raise
     `TypeError` on the next auto-reload. `set_message_callback` is now legacy (delivery goes through
     `register_delivery_consumer`); check the fields 7c142a0's freshness test reads still reach it.
-- Next, in order: findings checked (2026-10-25); the flags are on the person's desk (filed
-  2026-10-25 while they were away): archfit, guard or delete (#128); the whole-transcript read each
-  second, patch here, wait, or accept, and an upstream issue (#131); the new dependencies (#133).
-  Default on all three: stay on `v4.16.0`; on their word, the superseded check, the merge with the folds and
-  the workflow removed, tests in slices, the verdict rows in `docs/FORK.md` (one per release), push.
+- **Decided by the person in chat, 2026-10-25:** "guard it and merge to follow the upstream tip"
+  (archfit, #128: keep the workflow, guard the job with
+  `if: github.repository == 'alexei-led/ccgram'`); the 1 Hz whole-transcript read (#131): patch it
+  in the merge (an unchanged file is not read, a grown one reads only its tail and extends the hash),
+  and draft an upstream issue for their word; the new dependencies (#133): take them. "The upstream
+  tip" is taken as the newest release, `v4.18.4`, by the priming's rule (releases only).
+- Next, in order: the superseded check; the merge of `v4.18.4` in a worktree with the folds and the
+  archfit guard; the transcript-read patch as the fork's own commit, its test failing first; tests in
+  slices; the verdict rows in `docs/FORK.md` (one per release) and the patch table; push; the
+  upstream issue draft for the person.
 
 ## Patch table
 
