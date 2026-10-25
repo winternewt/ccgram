@@ -139,24 +139,20 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   in the merge (an unchanged file is not read, a grown one reads only its tail and extends the hash),
   and draft an upstream issue for their word; the new dependencies (#133): take them. "The upstream
   tip" is taken as the newest release, `v4.18.4`, by the priming's rule (releases only).
-- **In flight (2026-10-25), local only, nothing pushed:** branch `merge-v4.18.4` in the worktree
-  `../ccgram-merge` (a sibling of this clone): the merge `0717583` (folds in its message; superseded
-  check: none of the 21 rows taken verbatim or superseded, no reverts) and `c57605d` (the
-  observation cache: an unchanged transcript is not read, a grown one reads its tail). Unit suite
-  8283 passed, integration 375 passed, wide `-n 8` runs work on this host (about 20 s each).
-- Open before the push: decoding each active transcript's JSON lines whole every second remains
-  (measured on a 341 MB real transcript: decode 6.6 s, message build 0.3 s, decoded entries about
-  1.5 GB resident). Caching decoded entries would hold about 4.5 times each transcript in memory; the
-  fitting fix is an incremental message build (decode new lines, fold them into the cached
-  messages, which are small). Put to the person 2026-10-25, with holding the push until then as
-  the recommendation.
-- Then: the verdict rows in `docs/FORK.md` (one per release) and the patch table rows (the cache,
-  and the incremental build if taken); push `main` by fast-forward; the upstream issue draft for the
-  person.
+- **Merged, branch `merge-v4.18.4`** in the worktree `../ccgram-merge` (a sibling of this clone):
+  the merge `0717583` (folds in its message; superseded check: none of the 21 rows taken verbatim or
+  superseded, no reverts), `c57605d` (the observation cache) and `3154319` (only appended lines are
+  parsed; the store keeps the last 4 KiB, not the file). On the 343 MB transcript a grown tick takes
+  about 2 ms instead of about 7 s. Unit suite 8297 passed, integration 375 passed.
+- The incremental build was put to the person on the desk (#141), default: build it, then push
+  `main`. Built under that default while they were away (2026-10-25).
+- Upstream issue for the 1 Hz read: drafted outside the repository, to put to the person with its
+  exact text; posted only on their word.
+- Then: push `main` by fast-forward to the branch head; remove the worktrees and the merge branch.
 
 ## Patch table
 
-- In `docs/FORK.md`: 21 rows, 15 open upstream-bound (all unfiled), 6 open local, 0 retired.
+- In `docs/FORK.md`: 23 rows, 17 open upstream-bound (all unfiled), 6 open local, 0 retired.
 
 ## The bot's logs
 
@@ -179,7 +175,9 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 - The pin in `.claude/settings.local.json` names v0.1.89 (moved 2026-10-25), but on the old host the
   install record stayed at 0.1.87: the machine-wide marketplace record kept the old ref. Filed as the
   kit's #155. On the new host the pin and the install record both moved to v0.1.91 by
-  `bin/move-to-tag.py` (2026-10-25), then to v0.1.92 the same day; the watchdog runs it.
+  `bin/move-to-tag.py` (2026-10-25), then to v0.1.92 and v0.1.93 the same day; the watchdog runs
+  it. With v0.1.93, `[repo] forge_gate_unseated = true` (bc029d6): the fork is public, so every
+  session's forge writes stay checked.
 
 ## Carried from the old host's memory (it does not travel)
 
