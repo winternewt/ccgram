@@ -412,6 +412,60 @@ async def test_appended_entries_reach_history_without_a_new_generation(
     assert [m.parts[0].text for m in history.messages] == ["one", "two"]
 
 
+@pytest.fixture
+def whole_reads(monkeypatch):
+    """Count the store's whole-file reads of a transcript."""
+    real = store_module._transcript_record
+    reads: list[int] = []
+
+    def counting(path, row):
+        snapshot = real(path, row)
+        reads.append(len(snapshot.content))
+        return snapshot
+
+    monkeypatch.setattr(store_module, "_transcript_record", counting)
+    return reads
+
+
+async def test_a_growing_transcript_is_parsed_from_where_it_was_left(
+    service, backend, tmp_path, whole_reads
+):
+    path = tmp_path / "transcript.jsonl"
+    append(path, {"type": "assistant", "uuid": "a", "message": {"content": "one"}})
+    backend.target = replace(backend.target, transcript=path)
+    session = (await service.list_sessions())[0]
+    await service.history(session.id, None, 50)
+    for index in range(5):
+        append(
+            path,
+            {"type": "assistant", "uuid": f"n{index}", "message": {"content": "more"}},
+        )
+        await service.refresh()
+
+    history = await service.history(session.id, None, 50)
+
+    assert len(whole_reads) == 1
+    assert [m.parts[0].text for m in history.messages] == ["one"] + ["more"] * 5
+
+
+async def test_bytes_no_parse_saw_are_filled_by_one_whole_read(
+    service, backend, tmp_path, whole_reads
+):
+    path = tmp_path / "transcript.jsonl"
+    append(path, {"type": "assistant", "uuid": "a", "message": {"content": "one"}})
+    backend.target = replace(backend.target, transcript=path)
+    session = (await service.list_sessions())[0]
+    append(path, {"type": "assistant", "uuid": "b", "message": {"content": "two"}})
+    # An observation whose appended bytes no message read takes.
+    await service._source_version(service._targets[session.id])
+    append(path, {"type": "assistant", "uuid": "c", "message": {"content": "three"}})
+
+    history = await service.history(session.id, None, 50)
+
+    assert len(whole_reads) == 2
+    assert [m.parts[0].text for m in history.messages] == ["one", "two", "three"]
+
+
 @pytest.mark.parametrize("replacement", [True, False])
 async def test_action_rechecks_source_after_message_parsing(
     service, backend, tmp_path, monkeypatch, replacement

@@ -5,15 +5,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 from collections.abc import AsyncIterator, Collection
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Protocol
 
 from ..providers.base import HookEvent
 from .backend import CreationOptions, Prompt, SessionBackend, Target
 from .events import Event, EventHub
-from .messages import Message, build_messages, read_entries
+from .messages import Message, TranscriptFeed
 from .models import (
     Action,
     ActionResult,
@@ -30,6 +32,9 @@ from .store import ProtocolStore
 from .uploads import UploadStore
 
 MAX_HISTORY_PAGE = 200
+# A transcript's parsed messages not asked for this long (its session gone, or
+# a /clear moved it to a new key) are dropped.
+_FEED_IDLE_SECONDS = 300.0
 
 SUPPORTED_ACTIONS = (
     "message.send",
@@ -74,6 +79,8 @@ class LocalSessionService:
         self._refresh_lock = asyncio.Lock()
         self._transcript_stamps: dict[str, tuple[int, int, int, int]] = {}
         self._revisions: dict[str, dict[str, int]] = {}
+        self._feeds: dict[str, tuple[TranscriptFeed, float]] = {}
+        self._feed_lock = asyncio.Lock()
         # Lazy: ActionExecutor imports the service only for type checking.
         from .actions import ActionExecutor
 
@@ -198,7 +205,7 @@ class LocalSessionService:
     async def _source_version(self, target: Target) -> Target:
         if target.transcript is None:
             return target
-        source_key = f"{target.id.casefold()}:{target.conversation_id}"
+        source_key = _source_key(target)
         try:
             observation = await self.store.transcript_snapshot(
                 source_key, target.transcript
@@ -221,6 +228,7 @@ class LocalSessionService:
             target,
             history_generation=observation.generation,
             transcript_content=observation.content,
+            transcript_start=observation.start,
             transcript_stamp=observation.stamp,
         )
 
@@ -232,30 +240,59 @@ class LocalSessionService:
     ) -> tuple[Message, ...]:
         if target.transcript is None:
             return ()
-        try:
-            if target.transcript_content is None:
-                raise ProtocolError(
-                    503, "backend_unavailable", "Transcript observation is unavailable"
-                )
-            entries = await asyncio.to_thread(
-                read_entries,
-                target.transcript_content,
-                target.transcript_provider or target.provider,
-            )
-        except OSError as exc:
+        if target.transcript_content is None:
             raise ProtocolError(
-                503, "backend_unavailable", "Transcript is unavailable"
-            ) from exc
-        messages = await asyncio.to_thread(
-            build_messages,
-            entries,
-            target.conversation_id,
-            target.transcript_provider or target.provider,
-            target.history_generation,
-            source_range=source_range,
-        )
+                503, "backend_unavailable", "Transcript observation is unavailable"
+            )
+        async with self._feed_lock:
+            feed = await self._feed(
+                target, target.transcript, target.transcript_content
+            )
+            messages = feed.builder.messages(source_range)
         sid = next((sid for sid, t in self._targets.items() if t.id == target.id), "")
         return tuple(self._correlate(sid, message) for message in messages)
+
+    async def _feed(
+        self, target: Target, transcript: Path, content: bytes
+    ) -> TranscriptFeed:
+        """The source's parsed messages, extended by what ``target`` observed.
+
+        An observation holds only the bytes that changed since the one before
+        it. If the feed has not seen the bytes before those (a new source, a
+        new generation, an observation whose bytes nobody parsed), the whole
+        transcript is read once.
+        """
+        key = _source_key(target)
+        provider = target.transcript_provider or target.provider
+        now = time.monotonic()
+        for stale in [
+            k for k, (_, used) in self._feeds.items() if now - used > _FEED_IDLE_SECONDS
+        ]:
+            del self._feeds[stale]
+        feed, _ = self._feeds.pop(key, (None, 0.0))
+        if (
+            feed is None
+            or feed.builder.generation != target.history_generation
+            or feed.builder.provider != provider
+        ):
+            feed = TranscriptFeed(
+                target.conversation_id, provider, target.history_generation
+            )
+        if not await asyncio.to_thread(feed.feed, target.transcript_start, content):
+            try:
+                observation = await self.store.transcript_snapshot(
+                    key, transcript, full=True
+                )
+            except OSError as exc:
+                raise ProtocolError(
+                    503, "backend_unavailable", "Transcript is unavailable"
+                ) from exc
+            feed = TranscriptFeed(
+                target.conversation_id, provider, observation.generation
+            )
+            await asyncio.to_thread(feed.feed, 0, observation.content)
+        self._feeds[key] = feed, now
+        return feed
 
     async def remember_delivery(
         self,
@@ -626,3 +663,7 @@ class LocalSessionService:
                     )
                     return True
         return False
+
+
+def _source_key(target: Target) -> str:
+    return f"{target.id.casefold()}:{target.conversation_id}"

@@ -99,7 +99,18 @@ def read_entries(
                 for index, entry in enumerate(document["messages"])
                 if isinstance(entry, dict)
             ]
-    offset = 0
+    result, _ = read_complete_entries(raw)
+    return result
+
+
+def read_complete_entries(raw: bytes, start: int = 0) -> tuple[list[SourceEntry], int]:
+    """Parse the complete JSONL lines of ``raw``, which begins at byte ``start``.
+
+    Returns the entries with absolute offsets and the offset where parsing
+    stopped: the end of the last complete line, where the next read resumes.
+    """
+    result = []
+    offset = start
     for line in raw.splitlines(keepends=True):
         if not line.endswith(b"\n"):
             break
@@ -110,7 +121,7 @@ def read_entries(
         if isinstance(data, dict):
             result.append(SourceEntry(offset, data))
         offset += len(line)
-    return result
+    return result, offset
 
 
 def _text(value: Any) -> str:
@@ -1010,65 +1021,182 @@ def build_messages(
     Repeated native IDs (Gemini updates) increment revision once per source
     record; each distinct result line contributes once to its owner message.
     """
-    messages: dict[str, Message] = {}
-    contributors: dict[str, set[int]] = {}
-    calls: dict[str, tuple[str, int]] = {}
-    results: list[tuple[int, str, Any, bool]] = []
-    records, _ = parse_records(entries, provider)
-    for entry, record in records:
-        results.extend(
-            (entry.offset, call_id, output, failed)
-            for call_id, output, failed in record.results
-        )
-        if not record.parts:
-            continue
-        message_id = f"{conversation_id}/{'g' + str(generation) + '/' if generation else ''}{record.key}"
-        contributors.setdefault(message_id, set()).add(entry.offset)
-        previous = messages.get(message_id)
-        parts = tuple(
-            Part(
-                id=f"{message_id}#{i}",
-                **{name: value for name, value in part.items() if name in _PART_FIELDS},
+    builder = MessageBuilder(conversation_id, provider, generation)
+    builder.add(entries)
+    return builder.messages(source_range)
+
+
+class MessageBuilder:
+    """The messages of one transcript generation, extended as records arrive.
+
+    Adding entries in several batches gives the messages one batch of all of
+    them would: a record replaces its message, a tool result joins the latest
+    call with its id wherever the two appear, and a revision counts the source
+    records that contributed. Only messages a batch touched are rebuilt.
+    """
+
+    def __init__(self, conversation_id: str, provider: str, generation: int = 0):
+        self.conversation_id = conversation_id
+        self.provider = provider
+        self.generation = generation
+        self._state = TranscriptParserState()
+        # A message as its latest record left it, before tool results join.
+        self._bases: dict[str, Message] = {}
+        self._record_offsets: dict[str, set[int]] = {}
+        self._messages: dict[str, Message] = {}
+        self._contributors: dict[str, frozenset[int]] = {}
+        self._calls: dict[str, tuple[str, int]] = {}
+        self._owned: dict[str, set[str]] = {}
+        # Per call id: the offsets of its result lines, and the last one's output.
+        self._results: dict[str, tuple[set[int], str, bool]] = {}
+
+    def add(self, entries: list[SourceEntry]) -> None:
+        records, _ = parse_records(entries, self.provider, self._state)
+        dirty: dict[str, None] = {}
+        prefix = f"g{self.generation}/" if self.generation else ""
+        for entry, record in records:
+            for call_id, output, failed in record.results:
+                offsets = self._results.get(call_id, (set(), "", False))[0]
+                offsets.add(entry.offset)
+                self._results[call_id] = offsets, _text(output), failed
+                owner = self._calls.get(call_id)
+                if owner is not None:
+                    dirty[owner[0]] = None
+            if not record.parts:
+                continue
+            message_id = f"{self.conversation_id}/{prefix}{record.key}"
+            self._record_offsets.setdefault(message_id, set()).add(entry.offset)
+            parts = tuple(
+                Part(
+                    id=f"{message_id}#{i}",
+                    **{k: v for k, v in part.items() if k in _PART_FIELDS},
+                )
+                for i, part in enumerate(record.parts)
             )
-            for i, part in enumerate(record.parts)
+            self._bases[message_id] = Message(
+                message_id,
+                0,
+                self.conversation_id,
+                record.role,
+                record.time,
+                record.complete,
+                parts,
+                phase=record.phase,
+            )
+            for i, part in enumerate(parts):
+                if part.tool_call_id:
+                    previous = self._calls.get(part.tool_call_id)
+                    if previous is not None:
+                        self._owned[previous[0]].discard(part.tool_call_id)
+                        dirty[previous[0]] = None
+                    self._calls[part.tool_call_id] = message_id, i
+                    self._owned.setdefault(message_id, set()).add(part.tool_call_id)
+            self._messages.setdefault(message_id, self._bases[message_id])
+            dirty[message_id] = None
+        for message_id in dirty:
+            self._rebuild(message_id)
+
+    def _rebuild(self, message_id: str) -> None:
+        base = self._bases[message_id]
+        contributors = set(self._record_offsets[message_id])
+        parts = list(base.parts)
+        # Results join in source order of their last line, so where two calls
+        # claim one part the later result shows, as in one pass over all lines.
+        joined = sorted(
+            (max(self._results[call_id][0]), call_id)
+            for call_id in self._owned.get(message_id, ())
+            if call_id in self._results
         )
-        messages[message_id] = Message(
-            message_id,
-            previous.revision + 1 if previous else 1,
-            conversation_id,
-            record.role,
-            record.time,
-            record.complete,
-            parts,
-            phase=record.phase,
+        for _, call_id in joined:
+            offsets, text, failed = self._results[call_id]
+            index = self._calls[call_id][1]
+            if index >= len(parts):
+                continue
+            parts[index] = replace(
+                parts[index],
+                status="failed" if failed else "completed",
+                output={"text": text, "truncated": False},
+            )
+            contributors |= offsets
+        self._messages[message_id] = replace(
+            base, revision=len(contributors), parts=tuple(parts)
         )
-        for i, part in enumerate(parts):
-            if part.tool_call_id:
-                calls[part.tool_call_id] = message_id, i
-    for offset, call_id, output, failed in results:
-        owner = calls.get(call_id)
-        if owner is None:
-            continue
-        message_id, index = owner
-        message = messages[message_id]
-        parts = list(message.parts)
-        parts[index] = replace(
-            parts[index],
-            status="failed" if failed else "completed",
-            output={"text": _text(output), "truncated": False},
+        self._contributors[message_id] = frozenset(contributors)
+
+    def messages(
+        self, source_range: tuple[int, int | None] | None = None
+    ) -> tuple[Message, ...]:
+        if source_range is None:
+            return tuple(self._messages.values())
+        start, end = source_range
+        return tuple(
+            message
+            for message in self._messages.values()
+            if any(
+                offset >= start and (end is None or offset < end)
+                for offset in self._contributors[message.id]
+            )
         )
-        contributors[message_id].add(offset)
-        messages[message_id] = replace(
-            message, parts=tuple(parts), revision=len(contributors[message_id])
-        )
-    if source_range is None:
-        return tuple(messages.values())
-    start, end = source_range
-    return tuple(
-        message
-        for message in messages.values()
-        if any(
-            offset >= start and (end is None or offset < end)
-            for offset in contributors[message.id]
-        )
-    )
+
+
+_FEED_SLICE_BYTES = 4 << 20
+
+
+class TranscriptFeed:
+    """A transcript's messages, fed the bytes its observations return.
+
+    Same generation means the bytes already fed are unchanged, so each feed
+    parses only what follows them. An unfinished last line waits in
+    ``_pending`` until a later feed completes it. Gemini keeps one JSON
+    document rather than lines, so it is parsed whole on every change.
+    """
+
+    def __init__(self, conversation_id: str, provider: str, generation: int):
+        self.builder = MessageBuilder(conversation_id, provider, generation)
+        self._position = 0
+        self._pending = b""
+
+    @property
+    def seen(self) -> int:
+        """The source bytes fed so far."""
+        return self._position + len(self._pending)
+
+    def feed(self, start: int, content: bytes) -> bool:
+        """Take ``content``, the source from byte ``start``; False if bytes are missing.
+
+        Bytes already fed are skipped; a ``start`` past them leaves a gap only
+        a whole read can fill.
+        """
+        if start > self.seen:
+            return False
+        new = content[self.seen - start :]
+        if not new:
+            return True
+        if self.builder.provider == "gemini":
+            if start != 0:
+                return False
+            self.builder = MessageBuilder(
+                self.builder.conversation_id, "gemini", self.builder.generation
+            )
+            self.builder.add(read_entries(content, "gemini"))
+            self._position, self._pending = len(content), b""
+            return True
+        data = self._pending + new if self._pending else new
+        done = 0
+        # Slices bound the decoded entries held at once, whatever the size fed.
+        while done < len(data):
+            cut = data.rfind(b"\n", done, done + _FEED_SLICE_BYTES) + 1
+            if cut <= done:
+                cut = data.find(b"\n", done + _FEED_SLICE_BYTES) + 1
+                if cut <= 0:
+                    break
+            entries, end = read_complete_entries(data[done:cut], self._position + done)
+            self.builder.add(entries)
+            if end != self._position + cut:
+                # A line that is not a JSONL line stops parsing, as in one pass.
+                done = end - self._position
+                break
+            done = cut
+        self._pending = data[done:]
+        self._position += done
+        return True

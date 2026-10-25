@@ -146,11 +146,11 @@ async def test_lost_hook_processing_keeps_session_blocked(
             runtime.observe_hook(event)
         if failure == "processing":
 
-            def unavailable(path, provider):
+            def unavailable(self, start, content):
                 raise OSError("transcript unavailable")
 
             monkeypatch.setattr(
-                "ccgram.session_protocol.service.read_entries", unavailable
+                "ccgram.session_protocol.service.TranscriptFeed.feed", unavailable
             )
         with pytest.raises(asyncio.CancelledError):
             await runtime.poll("")
