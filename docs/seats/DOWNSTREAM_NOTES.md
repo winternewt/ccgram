@@ -102,8 +102,10 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
     `raw=`: the fork's `messaging_pipeline/plugin_reload.py` calls it without one and would raise
     `TypeError` on the next auto-reload. `set_message_callback` is now legacy (delivery goes through
     `register_delivery_consumer`); check the fields 7c142a0's freshness test reads still reach it.
-- Next, in order: findings checked (2026-10-25); the flags are with the person (archfit: delete or
-  guard; the new dependencies; the whole-transcript read each second), default: stay on `v4.16.0`; on their word, the superseded check, the merge with the folds and
+- Next, in order: findings checked (2026-10-25); the flags are on the person's desk (filed
+  2026-10-25 while they were away): archfit, guard or delete (#128); the whole-transcript read each
+  second, patch here, wait, or accept, and an upstream issue (#131); the new dependencies (#133).
+  Default on all three: stay on `v4.16.0`; on their word, the superseded check, the merge with the folds and
   the workflow removed, tests in slices, the verdict rows in `docs/FORK.md` (one per release), push.
 
 ## Patch table
