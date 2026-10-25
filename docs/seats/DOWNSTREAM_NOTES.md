@@ -139,10 +139,20 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   in the merge (an unchanged file is not read, a grown one reads only its tail and extends the hash),
   and draft an upstream issue for their word; the new dependencies (#133): take them. "The upstream
   tip" is taken as the newest release, `v4.18.4`, by the priming's rule (releases only).
-- Next, in order: the superseded check; the merge of `v4.18.4` in a worktree with the folds and the
-  archfit guard; the transcript-read patch as the fork's own commit, its test failing first; tests in
-  slices; the verdict rows in `docs/FORK.md` (one per release) and the patch table; push; the
-  upstream issue draft for the person.
+- **In flight (2026-10-25), local only, nothing pushed:** branch `merge-v4.18.4` in the worktree
+  `../ccgram-merge` (a sibling of this clone): the merge `0717583` (folds in its message; superseded
+  check: none of the 21 rows taken verbatim or superseded, no reverts) and `c57605d` (the
+  observation cache: an unchanged transcript is not read, a grown one reads its tail). Unit suite
+  8283 passed, integration 375 passed, wide `-n 8` runs work on this host (about 20 s each).
+- Open before the push: decoding each active transcript's JSON lines whole every second remains
+  (measured on a 341 MB real transcript: decode 6.6 s, message build 0.3 s, decoded entries about
+  1.5 GB resident). Caching decoded entries would hold about 4.5 times each transcript in memory; the
+  fitting fix is an incremental message build (decode new lines, fold them into the cached
+  messages, which are small). Put to the person 2026-10-25, with holding the push until then as
+  the recommendation.
+- Then: the verdict rows in `docs/FORK.md` (one per release) and the patch table rows (the cache,
+  and the incremental build if taken); push `main` by fast-forward; the upstream issue draft for the
+  person.
 
 ## Patch table
 
