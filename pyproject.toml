@@ -132,8 +132,9 @@ max-statements = 60
 "src/ccgram/handlers/recovery_callbacks.py" = ["C901"]
 
 [tool.deptry.per_rule_ignores]
-# DEP002: dev/CLI tools (never imported in src/)
-DEP002 = ["deptry", "pyright", "pytest", "pytest-asyncio", "pytest-cov", "pytest-timeout", "ruff", "hypothesis", "jsonschema", "referencing"]
+# DEP002: dev/CLI tools (never imported in src/); pyromark is declared only to cap
+# telegramify-markdown's backend (see dependencies)
+DEP002 = ["deptry", "pyright", "pytest", "pytest-asyncio", "pytest-cov", "pytest-timeout", "ruff", "hypothesis", "jsonschema", "referencing", "pyromark"]
 # DEP003: optional extras — imported only when installed (guarded by try/except ImportError)
 DEP003 = ["edge-tts"]
 
