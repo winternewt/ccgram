@@ -10,12 +10,28 @@ from ccgram.hooks.adapters import ClaudeHookAdapter
 from ccgram.providers.base import HookEvent
 from ccgram.session_protocol.backend import Prompt
 from ccgram.session_protocol.models import Action, ProtocolError
+from ccgram.session_protocol import store as store_module
 from ccgram.session_protocol.service import LocalSessionService
 
 
 def append(path, data):
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(data) + "\n")
+
+
+@pytest.fixture
+def full_reads(monkeypatch):
+    """Observe every transcript with a full read, as before the observation cache.
+
+    The race tests below change the file at the moment the store reads it; an
+    unchanged file is not read at all once cached, so they pin the full read.
+    """
+    real = store_module._observe_transcript
+    monkeypatch.setattr(
+        store_module,
+        "_observe_transcript",
+        lambda path, row, _memo: real(path, row, None),
+    )
 
 
 async def test_delivery_correlates_after_transcript_was_published_during_send(
@@ -301,7 +317,7 @@ async def test_resume_is_available_only_for_a_previous_agent_in_a_shell(
 @pytest.mark.parametrize("operation", ["history", "refresh", "action"])
 @pytest.mark.parametrize("replacement", [True, False])
 async def test_source_change_during_read_never_uses_old_generation(
-    service, backend, tmp_path, monkeypatch, operation, replacement
+    service, backend, tmp_path, monkeypatch, operation, replacement, full_reads
 ):
     from contextlib import contextmanager
     from pathlib import Path
@@ -354,6 +370,49 @@ async def test_source_change_during_read_never_uses_old_generation(
 
 
 @pytest.mark.parametrize("replacement", [True, False])
+async def test_source_change_between_cached_observations_moves_the_generation(
+    service, backend, tmp_path, replacement
+):
+    path = tmp_path / "transcript.jsonl"
+    original = {"type": "assistant", "uuid": "same", "message": {"content": "old"}}
+    append(path, original)
+    backend.target = replace(backend.target, transcript=path)
+    session = (await service.list_sessions())[0]
+    initial = (await service.history(session.id, None, 50)).messages[0]
+    await service.refresh()
+    changed = json.dumps({**original, "message": {"content": "new"}}) + "\n"
+    if replacement:
+        (tmp_path / "replacement").write_text(changed, encoding="utf-8")
+        (tmp_path / "replacement").replace(path)
+    else:
+        path.write_text(changed, encoding="utf-8")
+
+    await service.refresh()
+
+    history = await service.history(session.id, None, 50)
+    assert history.history_generation == 1
+    assert history.messages[0].id != initial.id
+    assert history.messages[0].parts[0].text == "new"
+
+
+async def test_appended_entries_reach_history_without_a_new_generation(
+    service, backend, tmp_path
+):
+    path = tmp_path / "transcript.jsonl"
+    append(path, {"type": "assistant", "uuid": "a", "message": {"content": "one"}})
+    backend.target = replace(backend.target, transcript=path)
+    session = (await service.list_sessions())[0]
+    await service.refresh()
+    append(path, {"type": "assistant", "uuid": "b", "message": {"content": "two"}})
+
+    await service.refresh()
+
+    history = await service.history(session.id, None, 50)
+    assert history.history_generation == 0
+    assert [m.parts[0].text for m in history.messages] == ["one", "two"]
+
+
+@pytest.mark.parametrize("replacement", [True, False])
 async def test_action_rechecks_source_after_message_parsing(
     service, backend, tmp_path, monkeypatch, replacement
 ):
@@ -402,7 +461,9 @@ async def test_action_rechecks_source_after_message_parsing(
     assert backend.sent == []
 
 
-async def test_unstable_source_fails_closed(service, backend, tmp_path, monkeypatch):
+async def test_unstable_source_fails_closed(
+    service, backend, tmp_path, monkeypatch, full_reads
+):
     from contextlib import contextmanager
     from pathlib import Path
 

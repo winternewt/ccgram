@@ -23,6 +23,12 @@ from typing import Any
 from .models import Action, ActionResult, ProtocolError, wire
 
 _PAIR_TTL = 120
+# Bytes before the end of the last observation that a grown transcript must
+# still hold, as evidence that it was appended to rather than rewritten.
+_TRANSCRIPT_MARKER_BYTES = 4096
+# A source not observed for this long (its session gone, or a /clear moved it
+# to a new key) drops its in-memory observation.
+_TRANSCRIPT_MEMO_IDLE_SECONDS = 300.0
 _ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 
@@ -78,6 +84,7 @@ class ProtocolStore:
                 "INSERT OR IGNORE INTO metadata VALUES ('fingerprint', ?)",
                 (secrets.token_hex(32),),
             )
+        self._transcript_memos: dict[str, _TranscriptMemo] = {}
 
     def close(self) -> None:
         self.db.close()
@@ -305,7 +312,17 @@ class ProtocolStore:
             "SELECT inode, size, prefix_size, prefix_hash, generation FROM transcripts WHERE key=?",
             (key,),
         ).fetchone()
-        snapshot = await asyncio.to_thread(_transcript_record, path, row)
+        memo = self._transcript_memos.get(key)
+        snapshot, memo = await asyncio.to_thread(_observe_transcript, path, row, memo)
+        now = time.monotonic()
+        memo.used = now
+        self._transcript_memos[key] = memo
+        for stale in [
+            k
+            for k, m in self._transcript_memos.items()
+            if now - m.used > _TRANSCRIPT_MEMO_IDLE_SECONDS
+        ]:
+            del self._transcript_memos[stale]
         record = snapshot.record
         if row != record:
             with self.db:
@@ -341,6 +358,92 @@ class TranscriptSnapshot:
 
 def _source_stamp(stat: os.stat_result) -> tuple[int, int, int, int]:
     return stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+@dataclass(slots=True)
+class _TranscriptMemo:
+    """The last observation of one transcript, kept to skip re-reading it.
+
+    ``hasher`` has consumed exactly ``snapshot.content``, so growth extends it
+    instead of hashing the whole file again. Lives in memory only: the first
+    observation after a restart is a full read.
+    """
+
+    snapshot: TranscriptSnapshot
+    device: int
+    hasher: Any
+    used: float = 0.0
+
+
+def _observe_transcript(
+    path: Path,
+    row: tuple[int, int, int, str, int] | None,
+    memo: _TranscriptMemo | None,
+) -> tuple[TranscriptSnapshot, _TranscriptMemo]:
+    """Observe a transcript, reading only what changed since ``memo``.
+
+    The session core observes every source each second. An unchanged file
+    returns the last observation without a read; a file that only grew reads
+    from where the last observation ended. Anything else (a new inode, a
+    shrink, the bytes before the old end changed, or a stored record this
+    memo did not write) takes the full read, which decides the generation.
+    """
+    if memo is not None and row == memo.snapshot.record:
+        current = path.stat()
+        if (
+            current.st_dev == memo.device
+            and _source_stamp(current) == memo.snapshot.stamp
+        ):
+            return memo.snapshot, memo
+        grown = _read_appended(path, memo)
+        if grown is not None:
+            return grown
+    snapshot = _transcript_record(path, row)
+    current = path.stat()
+    return snapshot, _TranscriptMemo(
+        snapshot, current.st_dev, hashlib.sha256(snapshot.content)
+    )
+
+
+def _read_appended(
+    path: Path, memo: _TranscriptMemo
+) -> tuple[TranscriptSnapshot, _TranscriptMemo] | None:
+    """Extend ``memo`` by the bytes appended since, or None if it was not an append."""
+    old = memo.snapshot
+    old_size = len(old.content)
+    marker_start = max(0, old_size - _TRANSCRIPT_MARKER_BYTES)
+    with path.open("rb") as source:
+        before = os.fstat(source.fileno())
+        if (
+            before.st_dev != memo.device
+            or before.st_ino != old.stamp[0]
+            or before.st_size < old_size
+        ):
+            return None
+        source.seek(marker_start)
+        if source.read(old_size - marker_start) != old.content[marker_start:]:
+            return None
+        tail = source.read()
+        after = os.fstat(source.fileno())
+    current = path.stat()
+    if (
+        _source_stamp(before) != _source_stamp(after)
+        or _source_stamp(after) != _source_stamp(current)
+        or old_size + len(tail) != current.st_size
+    ):
+        return None
+    hasher = memo.hasher.copy()
+    hasher.update(tail)
+    content = old.content + tail
+    record = (
+        current.st_ino,
+        len(content),
+        len(content),
+        hasher.hexdigest(),
+        old.generation,
+    )
+    snapshot = TranscriptSnapshot(content, _source_stamp(current), record)
+    return snapshot, _TranscriptMemo(snapshot, memo.device, hasher)
 
 
 def _transcript_record(
