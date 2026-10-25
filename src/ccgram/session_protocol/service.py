@@ -224,6 +224,10 @@ class LocalSessionService:
             raise ProtocolError(
                 503, "backend_unavailable", "Transcript source is unavailable"
             ) from exc
+        if source_key in self._feeds:
+            # A source still observed keeps its parsed messages, however long
+            # it sits unchanged; only a source no longer observed is dropped.
+            self._feeds[source_key] = self._feeds[source_key][0], time.monotonic()
         return replace(
             target,
             history_generation=observation.generation,

@@ -448,6 +448,29 @@ async def test_a_growing_transcript_is_parsed_from_where_it_was_left(
     assert [m.parts[0].text for m in history.messages] == ["one"] + ["more"] * 5
 
 
+async def test_a_transcript_unchanged_for_long_keeps_its_parsed_messages(
+    service, backend, tmp_path, whole_reads
+):
+    from ccgram.session_protocol import service as service_module
+
+    path = tmp_path / "transcript.jsonl"
+    append(path, {"type": "assistant", "uuid": "a", "message": {"content": "one"}})
+    backend.target = replace(backend.target, transcript=path)
+    session = (await service.list_sessions())[0]
+    await service.history(session.id, None, 50)
+    # Every parsed transcript last asked for longer ago than the idle limit.
+    aged = time.monotonic() - service_module._FEED_IDLE_SECONDS - 1
+    service._feeds = {key: (feed, aged) for key, (feed, _) in service._feeds.items()}
+    await service.refresh()
+    append(path, {"type": "assistant", "uuid": "b", "message": {"content": "two"}})
+
+    await service.refresh()
+    history = await service.history(session.id, None, 50)
+
+    assert len(whole_reads) == 1
+    assert [m.parts[0].text for m in history.messages] == ["one", "two"]
+
+
 async def test_bytes_no_parse_saw_are_filled_by_one_whole_read(
     service, backend, tmp_path, whole_reads
 ):
