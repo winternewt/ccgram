@@ -9,7 +9,7 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 - Last release taken: `v4.16.0`, by replay. `main` is still on it (plus the fork's own commits, the
   last `5b01e00`).
-- **Waiting: v4.17.0, v4.18.0, v4.18.1, v4.18.2**, read as one delta from `v4.16.0` (277 files, about 13.6k
+- **Waiting: v4.17.0, v4.18.0, v4.18.1, v4.18.2, v4.18.3**, read as one delta from `v4.16.0` (277 files, about 13.6k
   lines outside tests). `upstream-main` on `origin` is at `36a6efa` (= `v4.18.1`).
 - **Gate, read-in-full pass: done** by three Opus readers split by area (2026-10-25), every hunk of
   the delta read but about 550 lines of the deleted `transcript_parser.py`'s tail, scanned (deleted
@@ -100,7 +100,11 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
     entry is `isMeta` for the fold of 06908db. Codex drops `system` role messages and user text
     opening with its injected context tags. The summarizer sends less transcript text, never more.
   - The whole-transcript read each second (#131) is untouched: the store is not in the delta.
-  - When the desk answers, the merge takes `v4.18.2`, not `v4.18.1`.
+- **v4.18.3** (tagged 2026-10-25, `bfe7bb7`; `upstream-main` moved to it): its delta from `v4.18.2`
+  (8 files, 177 lines) read in full by the seat: logging only. A multiplexer outage is logged at its
+  start and end (session core's `poll`) or throttled (status poll, monitor reconciliation, agterm
+  listing) instead of once per second. No process, socket, file write or dependency. Clean.
+- When the desk answers, the merge takes the newest release then (now `v4.18.3`).
 - **Trial merge** (a detached worktree at `v4.18.1`, `git merge --no-commit main`): no fork commit
   taken verbatim (`git cherry` shows none). 7 conflicts:
   - `transcript_parser.py` and its test deleted upstream (the parsing moved, rewritten, to
