@@ -1,6 +1,9 @@
 [repo]
 # The repository's channel takes this name too; the seats talk in agent-chat and announcements (D104).
 id = "ccgram"
+# The fork is public: every session's forge writes are checked for leak words and absolute paths,
+# not only a seat's (#162).
+forge_gate_unseated = true
 
 [seat.downstream]
 # The desk's secretary relays the person's answers, and the kit's admin asks the seat directly (its
