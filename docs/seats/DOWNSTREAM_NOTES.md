@@ -15,20 +15,43 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   the delta read but about 550 lines of the deleted `transcript_parser.py`'s tail, scanned (deleted
   code cannot run). Unchanged between the tags: `main.py`, `bot.py`, `config.py`, `telegram_*.py`,
   `llm/`, `whisper/`, `tts/`, `miniapp/`, `handlers/send/`, `handlers/upgrade.py`, the Makefile.
-  Findings, each still to be checked against the code by the seat before the verdict:
-  - **Red flag: `.github/workflows/archfit.yaml`** (new). Runs on push to `main` and on pull
-    requests, `id-token: write`, an upstream maintainer's action pinned by SHA, uploads architecture
-    data to a third-party service with the job's OIDC token. In this fork it would run on every push
-    to `main`. To be removed (or disabled) in the merge, on the person's word.
-  - **New runtime dependency `qrcode` 8.2**, imported only by the new `ccgram pair` command. Dev
-    extra adds `jsonschema`, `referencing`, `jsonschema-specifications`, `rpds-py` (the last on a
-    calendar version; check its provenance on the index). By the role, a new dependency is a red
-    flag for the person.
+  Findings, checked against the code by the seat (2026-10-25) unless marked open:
+  - **Red flag, checked: `.github/workflows/archfit.yaml`** (new, with `.archfit-app.yaml` and
+    archfit `CODEOWNERS` entries; `.archfit.yaml` itself predates `v4.16.0`). Actions are enabled on
+    this fork with all actions allowed, so after the merge it runs on every push to `main` and every
+    pull request. The action (`alexei-led/archfit-action@7efc29b`, read whole: `action.yml` and its
+    four scripts) checks out the full history without a persisted credential, pulls the engine image
+    `ghcr.io/alexei-led/archfit` by digest and runs it over the checkout (`.git` read-only, all
+    capabilities dropped, no token in its environment, but **default container networking**). Because
+    `.archfit.yaml` exists, report mode measures, then mints a GitHub OIDC token for audience
+    `https://app.coupling.dev` and POSTs the engine's architecture report there, with an envelope
+    naming this repository, the commit, the run id and the image digest. That token is an identity
+    claim for that audience only, not a GitHub credential. **Not read: the engine image itself**
+    (code that runs with network access over the checkout). The fork is public, so the source is no
+    secret; what leaves is derived data plus the fork's identity, to a service the person has not
+    chosen. The App is very likely not installed for this fork, so the upload would also be refused and
+    the job would go red on each push. Options for the person: delete the workflow and
+    `.archfit-app.yaml` in the merge (a modify/delete conflict whenever the upstream edits them), or
+    keep them and guard the job with `if: github.repository == 'alexei-led/ccgram'` (one line, merges
+    cleanly). The `CODEOWNERS` lines name a user with no access here: GitHub ignores them, a note.
+  - **New runtime dependency `qrcode` 8.2**, imported only by the new `ccgram pair` command (lazy),
+    which prints a local JSON payload (the URL the person passes, a single-use code, the store's
+    fingerprint) and draws it as a terminal QR; no network path, its only locked dependency is
+    `colorama`. Dev extra adds `jsonschema` 4.26.0, `referencing` 0.37.0,
+    `jsonschema-specifications` 2025.9.1, `rpds-py` 2026.9.1. Checked: every hash in `uv.lock` for
+    the five is on PyPI for that version, from the PyPI registry; `rpds-py` moved to calendar versions
+    at 2026.5.1 under the same maintainer and is published by trusted publishing from
+    `crate-py/rpds`'s own CI. By the role, a new dependency is still the person's call: clean.
   - **New local API server** (`src/ccgram/api/`): off unless `CCGRAM_API_PORT` is set (a non-integer
     value aborts startup), binds 127.0.0.1, Host/Origin allowlists, bearer device tokens from a
     120 s single-use pairing code, hashes only at rest. A paired device has full control: it reads
     every session's transcript and panes, pastes text and keys into panes (a shell command in
     effect), creates and kills sessions, uploads files. Note, not a flag while the port is unset.
+    Checked: the bind is the literal `127.0.0.1` with no override (`CCGRAM_API_HOSTS` and
+    `CCGRAM_API_ORIGINS` widen only the allowlists); the machine's hostname, read by the session core,
+    goes only into the snapshots this local API serves. The new `scripts/session_protocol_client.py`
+    is a manual conformance client: it talks only to the `--url` given (HTTPS, or HTTP on localhost)
+    with a token from the environment, and nothing runs it.
   - **Checked by the seat, a blocker for adoption as is:** the session core's `refresh()` runs every
     second (`session_protocol/runtime.py` `poll`) and, for every target, `_source_version` calls
     `store.transcript_snapshot`, whose `_transcript_record` reads the **whole** transcript into memory
@@ -44,16 +67,21 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
     `ccgram hook --install` or `doctor --fix` (doctor will report them missing). They log the tool
     name and a hash of its input, give no decision, and cost one Python start before every tool
     call. A Pi `hooks.json` writer and `PI_CODING_AGENT_DIR` are new, used only on a Pi install.
+    Checked: both append to the local events log through the existing writer and print no decision.
   - Every handler's pane write (keys, text, kill, create, split, rename) now goes through the session
-    core's adapter, with ownership checks kept before each call. Open check for the seat: that the
-    core validates a `pane_id` taken from callback data as belonging to its window (the old code
-    passed the window). `/split <command>` now also works on herdr.
+    core's adapter, with ownership checks kept before each call. Checked: a `pane_id` from callback
+    data reaches the multiplexer only through `backend.select_pane`, which looks it up among
+    `list_panes` of the bound window and refuses one not there (`actions.py` validation, before any
+    write). `/split <command>` now also works on herdr.
   - The transcript monitor's event hub is the one the API server shares; only the Telegram consumer
     is durable. Several paths now read a whole transcript where they seeked (the slash-command
     failure probe on every forwarded command, the restart rebuild, the session summary).
   - The provisioning claim lost its 180 s bound for a CLI that never starts (a regression, not a
     flag).
   - No new outbound host in the Python, no eval or obfuscation, code matches the commit messages.
+    Checked: the delta's added lines under `src/` and `scripts/` carry no URL literal and no new HTTP
+    client use beyond the loopback API and the conformance client; no new process spawn
+    (`worktrees.py` is the old `handlers/topics/worktree.py` moved, one `except` widened).
 - **Trial merge** (a detached worktree at `v4.18.1`, `git merge --no-commit main`): no fork commit
   taken verbatim (`git cherry` shows none). 7 conflicts:
   - `transcript_parser.py` and its test deleted upstream (the parsing moved, rewritten, to
