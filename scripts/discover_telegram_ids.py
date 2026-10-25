@@ -9,6 +9,11 @@ traffic: start this, then have each person post anything in the group. Every
 group the bot hears from is printed with its member count and admins, and every
 person who posts, joins or presses a button is printed once.
 
+People who posted before the script ran can still be found: forward one of
+their messages to the bot (in a private chat or the group). The forward carries
+the original sender's ID unless their "Forwarded Messages" privacy setting hides
+it; then only their name arrives, and the script says so.
+
 Reads TELEGRAM_BOT_TOKEN the way the ccgram CLIs do (cwd .env, then
 $CCGRAM_DIR/.env). It long-polls getUpdates, so stop the bot first: Telegram
 allows one poller per token and answers a second with 409 Conflict. The
@@ -62,6 +67,7 @@ class Person:
 class Seen:
     groups: dict[int, str] = field(default_factory=dict)
     people: dict[int, Person] = field(default_factory=dict)
+    hidden: set[str] = field(default_factory=set)
 
     def add_person(
         self, user: dict[str, Any] | None, chat_id: int | None, role: str = "member"
@@ -103,6 +109,22 @@ def users_in_update(
         ]
         found.append((_chat_of(obj), [user for user in candidates if user]))
     return found
+
+
+def forward_in_update(
+    update: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """(original sender, None) for a linked forward, (None, their name) for a
+    forward whose sender hid the link, (None, None) for anything else."""
+    for kind in ("message", "edited_message"):
+        origin = (update.get(kind) or {}).get("forward_origin")
+        if not origin:
+            continue
+        if origin.get("type") == "user":
+            return origin["sender_user"], None
+        if origin.get("type") == "hidden_user":
+            return None, origin.get("sender_user_name") or "?"
+    return None, None
 
 
 class BotApi:
@@ -160,7 +182,22 @@ def listen(api: BotApi, seconds: float) -> Seen:
                     person = seen.add_person(user, chat.get("id"))
                     if person:
                         print(person.line(), flush=True)
+            report_forward(seen, update)
     return seen
+
+
+def report_forward(seen: Seen, update: dict[str, Any]) -> None:
+    user, hidden_name = forward_in_update(update)
+    person = seen.add_person(user, None, "forwarded")
+    if person:
+        print(person.line(), flush=True)
+    if hidden_name and hidden_name not in seen.hidden:
+        seen.hidden.add(hidden_name)
+        print(
+            f"HIDDEN {hidden_name}: their privacy setting withholds the ID from"
+            " forwards; have them post in the group, or ask @userinfobot",
+            flush=True,
+        )
 
 
 def main() -> None:
@@ -186,7 +223,8 @@ def main() -> None:
             f"bot @{me['username']} has a webhook set; getUpdates cannot run while it is"
         )
     print(
-        f"listening {args.seconds:.0f}s as @{me['username']}: ask everyone to post in the group",
+        f"listening {args.seconds:.0f}s as @{me['username']}: ask everyone to post in the group,"
+        " or forward their messages to the bot",
         flush=True,
     )
 
