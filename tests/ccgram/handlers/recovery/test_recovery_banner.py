@@ -253,7 +253,7 @@ def create_env():
         patch(f"{_RC}.session_manager") as session,
         patch(f"{_RC}.safe_edit", new_callable=AsyncMock) as edit,
         patch(f"{_RC}.get_provider") as get_provider,
-        patch(f"{_RC}.resolve_launch_command", return_value="claude"),
+        patch(f"{_RC}.adapter_for") as adapter_for,
         patch(
             f"{_RC}._stale_recovery_offer", new_callable=AsyncMock, return_value=None
         ),
@@ -267,8 +267,12 @@ def create_env():
             claim_id="claim-1"
         )
         router.commit_topic_provisioning.return_value = True
-        tmux.create_window = AsyncMock(return_value=(True, "created", "project", "@5"))
-        tmux.kill_window = AsyncMock(return_value=True)
+        adapter = MagicMock()
+        adapter.create = AsyncMock(
+            return_value=SimpleNamespace(target_id="@5", title="project")
+        )
+        adapter.close = AsyncMock(return_value=(True, "Closed"))
+        adapter_for.return_value = adapter
         client_factory.return_value.edit_forum_topic = AsyncMock()
         yield SimpleNamespace(
             tmux=tmux,
@@ -276,6 +280,7 @@ def create_env():
             session=session,
             edit=edit,
             provider=provider,
+            adapter=adapter,
             client=client_factory.return_value,
         )
 
@@ -331,27 +336,25 @@ class TestRecoveryProbeCancellation:
         with (
             patch(f"{_RC}.thread_router", router),
             patch(f"{_RC}.session_manager") as session,
-            patch(f"{_RC}.tmux_manager") as tmux,
+            patch(f"{_RC}.tmux_manager"),
             patch(
                 f"{_RC}._stale_recovery_offer",
                 new_callable=AsyncMock,
                 side_effect=asyncio.CancelledError,
             ),
+            pytest.raises(asyncio.CancelledError),
         ):
-            tmux.create_window = AsyncMock()
-            with pytest.raises(asyncio.CancelledError):
-                await _create_and_bind_window(
-                    query,
-                    100,
-                    42,
-                    "/tmp/project",
-                    context,
-                    old_window_id="@0",
-                )
+            await _create_and_bind_window(
+                query,
+                100,
+                42,
+                "/tmp/project",
+                context,
+                old_window_id="@0",
+            )
 
         assert router.get_window_for_chat_thread(-100, 42) == "@0"
         assert router.iter_topic_provisionings() == []
-        tmux.create_window.assert_not_awaited()
 
         retry = router.begin_topic_provisioning(
             100,
@@ -366,8 +369,12 @@ class TestRecoveryProbeCancellation:
 
     async def test_failed_replacement_preserves_old_binding(self, create_env) -> None:
         query, context = _create_query()
-        create_env.tmux.create_window = AsyncMock(
-            return_value=(False, "Directory does not exist: /gone", "", "")
+        from ccgram.session_protocol.models import ProtocolError
+
+        create_env.adapter.create = AsyncMock(
+            side_effect=ProtocolError(
+                400, "invalid_request", "Directory does not exist: /gone"
+            )
         )
 
         result = await _create_and_bind_window(
@@ -394,9 +401,9 @@ class TestRecoveryProbeCancellation:
         async def create_window(*_args, **_kwargs):
             started.set()
             await release.wait()
-            return True, "created", "project", "@5"
+            return SimpleNamespace(target_id="@5", title="project")
 
-        create_env.tmux.create_window = AsyncMock(side_effect=create_window)
+        create_env.adapter.create = AsyncMock(side_effect=create_window)
         query, context = _create_query()
         task = asyncio.create_task(
             _create_and_bind_window(
@@ -415,7 +422,7 @@ class TestRecoveryProbeCancellation:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        create_env.tmux.kill_window.assert_awaited_once_with("@5")
+        create_env.adapter.close.assert_awaited_once_with("@5")
         create_env.router.abort_topic_provisioning.assert_called_once_with(
             "claim-1", target_confirmed_absent=True
         )

@@ -39,6 +39,10 @@ def _isolate_state(monkeypatch, clear_map_mock):
     from ccgram.providers import _ensure_registered
 
     _ensure_registered()
+    monkeypatch.setattr(ac, "adapter_for", lambda _: MagicMock())
+    monkeypatch.setattr(
+        "ccgram.handlers.shell.shell_prompt_orchestrator.ensure_setup", AsyncMock()
+    )
     window_store.window_states.clear()
     window_store.window_states["@7"] = WindowState(
         session_id="OLDSID",
@@ -178,6 +182,7 @@ async def test_arg_shell_switch_clears_mismatched_hook_map(
     assert kwargs["chat_id"] == -100
     assert kwargs["thread_id"] == 99
     assert kwargs["client"] is not None
+    assert kwargs["adapter"] is not None
     assert "Terminal" in _sent_text(reply)
     assert "will install" not in _sent_text(reply)
     assert state.session_id == ""
@@ -275,6 +280,7 @@ async def test_auto_falls_back_to_shell_and_triggers_ensure_setup(monkeypatch, r
     assert args == ("@7", "provider_switch")
     assert kwargs["chat_id"] == -100
     assert kwargs["thread_id"] == 99
+    assert kwargs["adapter"] is not None
 
 
 async def test_callback_cancel_keeps_state(monkeypatch, edit):
@@ -349,7 +355,7 @@ async def test_manual_override_blocks_auto_detect(monkeypatch):
     identity = identity_state.get_identity("@7")
     assert identity is not None
     await transcript_discovery._detect_and_apply_provider(
-        "@7", identity, fake_w, client=None, chat_id=0, thread_id=0
+        "@7", identity, fake_w, adapter=MagicMock(), client=None, chat_id=0, thread_id=0
     )
 
     assert set_provider_calls == []
@@ -413,7 +419,9 @@ async def test_manual_provider_mismatch_is_rejected_without_state_or_map_changes
     before = state.to_dict()
     monkeypatch.setattr(ac, "_redetect_provider", AsyncMock(return_value=live_provider))
 
-    provider, reply_text = await ac._apply_switch("@7", requested_provider)
+    provider, reply_text = await ac._apply_switch(
+        "@7", requested_provider, adapter=MagicMock()
+    )
 
     assert provider == "claude"
     assert f"{provider_label(live_provider)} is running" in reply_text
@@ -435,7 +443,7 @@ async def test_manual_switch_rejects_unidentified_foreground_process(
     )
     _confirm_live(monkeypatch, "@7")
 
-    provider, reply_text = await ac._apply_switch("@7", "shell")
+    provider, reply_text = await ac._apply_switch("@7", "shell", adapter=MagicMock())
 
     assert provider == "claude"
     assert "Could not verify" in reply_text
@@ -450,7 +458,7 @@ async def test_manual_switch_fails_closed_when_live_provider_is_unknown(
     before = state.to_dict()
     monkeypatch.setattr(ac, "_redetect_provider", AsyncMock(return_value=None))
 
-    provider, reply_text = await ac._apply_switch("@7", "shell")
+    provider, reply_text = await ac._apply_switch("@7", "shell", adapter=MagicMock())
 
     assert provider == "claude"
     assert "Could not verify" in reply_text
@@ -491,7 +499,7 @@ async def test_auto_shell_clears_old_agent_session_before_poll_reload(
     assert raw_path.exists()
     monkeypatch.setattr(ac, "_redetect_provider", AsyncMock(return_value=target))
 
-    provider, reply_text = await ac._apply_switch("@7", "auto")
+    provider, reply_text = await ac._apply_switch("@7", "auto", adapter=MagicMock())
 
     assert provider == target
     assert state.provider_name == target and not state.provider_manual_override
@@ -518,7 +526,7 @@ async def test_auto_keeps_provider_pinned_when_map_cleanup_is_unconfirmed(monkey
         AsyncMock(),
     )
 
-    provider, reply_text = await ac._apply_switch("@7", "auto")
+    provider, reply_text = await ac._apply_switch("@7", "auto", adapter=MagicMock())
 
     assert provider == "shell"
     assert state.provider_name == "shell" and state.provider_manual_override
@@ -557,7 +565,7 @@ async def test_auto_restores_exact_hook_session_saved_during_manual_override(
     assert raw_path.exists()
     monkeypatch.setattr(ac, "_redetect_provider", AsyncMock(return_value="pi"))
 
-    provider, reply_text = await ac._apply_switch("@7", "auto")
+    provider, reply_text = await ac._apply_switch("@7", "auto", adapter=MagicMock())
 
     assert provider == "pi"
     assert state.provider_name == "pi" and not state.provider_manual_override

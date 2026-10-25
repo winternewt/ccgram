@@ -14,6 +14,7 @@ def _make_update(user_id=1, thread_id=42, chat_id=100):
     update.effective_user = user
     update.message = message
     update.effective_chat = chat
+    update.update_id = 0
     return update
 
 
@@ -37,19 +38,22 @@ async def _run(
     mock_reply = AsyncMock()
     mock_tr = MagicMock()
     mock_tr.get_window_for_thread.return_value = window_id
-    mock_tm = MagicMock()
-    mock_tm.find_window_by_id = AsyncMock(
-        return_value=MagicMock() if window_alive else None
-    )
-    mock_tm.split_window = AsyncMock(return_value=new_pane)
-    mock_tm.send_to_pane = AsyncMock(return_value=True)
-    mock_tm.capabilities.native_agent_status = native_agent_status
+    adapter = MagicMock()
+    if not window_alive:
+        adapter.split = AsyncMock(return_value=(False, "Window no longer exists"))
+    elif native_agent_status:
+        adapter.split = AsyncMock(return_value=(False, "Splitting is not supported"))
+    elif new_pane is None:
+        adapter.split = AsyncMock(return_value=(False, "Could not split the window"))
+    else:
+        adapter.split = AsyncMock(return_value=(True, new_pane))
+    adapter.send_text = AsyncMock(return_value=(True, "Sent"))
 
     with (
         patch("ccgram.config.config") as mock_cfg,
         patch("ccgram.handlers.callback_helpers.get_thread_id", return_value=42),
         patch("ccgram.handlers.split_command.thread_router", mock_tr),
-        patch("ccgram.handlers.split_command.tmux_manager", mock_tm),
+        patch("ccgram.session_protocol.telegram.adapter_for", return_value=adapter),
         patch(
             "ccgram.handlers.messaging_pipeline.message_sender.safe_reply",
             mock_reply,
@@ -57,26 +61,26 @@ async def _run(
     ):
         mock_cfg.is_user_allowed.return_value = True
         await split_command(update, ctx)
-    return mock_reply, mock_tm
+    return mock_reply, adapter
 
 
 async def test_unbound_window_sends_error() -> None:
     reply, tm = await _run(_make_update(), _ctx(), window_id=None)
     reply.assert_called_once()
     assert "not bound" in reply.call_args[0][1].lower()
-    tm.split_window.assert_not_called()
+    tm.split.assert_not_called()
 
 
 async def test_dead_window_sends_error() -> None:
     reply, tm = await _run(_make_update(), _ctx(), window_id="@0", window_alive=False)
     reply.assert_called_once()
     assert "no longer exists" in reply.call_args[0][1].lower()
-    tm.split_window.assert_not_called()
+    tm.split.assert_awaited_once_with("@0", action_id="telegram-message:0")
 
 
 async def test_split_failure_sends_error() -> None:
     reply, tm = await _run(_make_update(), _ctx(), window_id="@0", new_pane=None)
-    tm.split_window.assert_awaited_once_with("@0")
+    tm.split.assert_awaited_once_with("@0", action_id="telegram-message:0")
     reply.assert_called_once()
     assert "could not split" in reply.call_args[0][1].lower()
 
@@ -88,15 +92,15 @@ async def test_herdr_split_command_is_rejected_before_pane_creation() -> None:
         window_id="herdr-session-v1-" + "a" * 64,
         native_agent_status=True,
     )
-    tm.split_window.assert_not_called()
-    tm.send_to_pane.assert_not_called()
+    tm.split.assert_awaited_once()
+    tm.send_text.assert_not_awaited()
     assert "not supported" in reply.call_args.args[1].lower()
 
 
 async def test_split_no_args_reports_new_pane() -> None:
     reply, tm = await _run(_make_update(), _ctx(), window_id="@0", new_pane="%5")
-    tm.split_window.assert_awaited_once_with("@0")
-    tm.send_to_pane.assert_not_called()
+    tm.split.assert_awaited_once_with("@0", action_id="telegram-message:0")
+    tm.send_text.assert_not_awaited()
     text = reply.call_args[0][1]
     assert "%5" in text and "/panes" in text
 
@@ -105,7 +109,14 @@ async def test_split_with_command_runs_in_new_pane() -> None:
     reply, tm = await _run(
         _make_update(), _ctx(["claude", "--resume"]), window_id="@0", new_pane="%5"
     )
-    tm.split_window.assert_awaited_once_with("@0")
-    tm.send_to_pane.assert_awaited_once_with("%5", "claude --resume", window_id="@0")
+    tm.split.assert_awaited_once_with("@0", action_id="telegram-message:0")
+    tm.send_text.assert_awaited_once_with(
+        "@0",
+        "claude --resume",
+        pane_id="%5",
+        submit=True,
+        terminal_input=True,
+        action_id="telegram-message:0:command",
+    )
     text = reply.call_args[0][1]
     assert "claude --resume" in text

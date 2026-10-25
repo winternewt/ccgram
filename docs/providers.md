@@ -17,6 +17,8 @@ CCGram supports multiple agent CLI backends. Each Telegram topic can use a diffe
 
 ## Transcript Delivery Guarantees
 
+Structured transcripts mix conversation with provider instructions, API-request snapshots, and other internal records. CCGram accepts only supported conversation envelopes for each provider before building history or live output. Internal and unknown records are not promoted to chat based on a nested role or text field. The same classification applies to history, live updates, resume and completion summaries, and task status. Visible tool results, configured thinking, local-command notices, and provider errors retain their existing presentation. Shell command output uses its separate explicit terminal path.
+
 For transcript-backed providers, CCGram delivers parsed output through an ordered queue. Consecutive eligible text items may be losslessly combined into one Telegram message only within the same chat, topic/thread, window, role, and transcript source session. Tool-use batching (`/verbose`), attachments/TTS, status updates, and any other queue boundary remain separate. Each original text item is rendered before batching, so its Telegram formatting is preserved and cannot leak into the next item.
 
 Delivery is at-least-once. CCGram persists a transcript's delivered watermark only after its queued delivery receipts succeed (or are intentionally dropped by a confirmed Jump to live). After a process restart or an unconfirmed Telegram result, it can replay output and therefore show a duplicate rather than risk losing output. Provider transcript files stay read-only; a confirmed Jump to live records a durable barrier and a visible skipped-range notice before advancing past that range. See [Delivery, Backlog, and Jump to Live](guides.md#delivery-backlog-and-jump-to-live) for queue metrics, severe thresholds, and the action's exact boundaries.
@@ -59,6 +61,15 @@ CCGRAM_ANTIGRAVITY_COMMAND=agy --effort high
 
 `<NAME>` is uppercase: `CLAUDE`, `CODEX`, `GEMINI`, `PI`, `ANTIGRAVITY`. Defaults to the provider's built-in command (`claude`, `codex`, `gemini`, `pi`, `agy`) when unset. New providers automatically support `CCGRAM_<NAME>_COMMAND` without code changes.
 
+A custom launch script must replace itself with the recognizable provider CLI. For example, `my-codex-wrapper` can contain:
+
+```sh
+#!/bin/sh
+exec codex "$@"
+```
+
+A long-running intermediary shell or an unrecognized wrapper is not foreground evidence for its child agent. Such launches remain quarantined; configure the CLI directly or use an `exec` wrapper. CCGram does not send input based only on a wrapper name or a stored hook identity.
+
 You can use this for a global "today" setup (all new sessions), for example:
 
 ```ini
@@ -93,6 +104,10 @@ If hooks are missing, ccgram warns at startup with the fix command. Hooks are op
 ### Claude Transcript
 
 Claude transcripts are JSONL files under `~/.claude/projects/`. They are read incrementally (byte offsets) for efficient polling.
+
+A newly started Claude session can create its transcript only after the first input. Until that first file appears, history is empty, but input remains available when the foreground process and prompt can be verified. Once a transcript has been observed, its disappearance or a read failure still makes the source unavailable; this startup exception never supplies foreground evidence.
+
+When SessionStart provides the exact path for a not-yet-created Claude transcript, the monitor reserves offset zero so a reply arriving before the next poll is not skipped. Existing Claude transcripts are not rewound.
 
 ### Task Lists
 
@@ -161,7 +176,16 @@ Gemini supports `/status` snapshots: CCGram parses recent transcript activity to
 
 ## Pi
 
-[Pi](https://pi.dev) is a Node.js-based CLI with JSONL v3 transcripts. With the `hook-runner` extension from `cc-thingz`, Pi emits Claude-compatible lifecycle hooks to `ccgram hook` for instant `SessionStart`, `Stop`, `SessionEnd`, and subagent signals. Without hook-runner, session tracking falls back to scanning `~/.pi/agent/sessions/--<encoded-cwd>--/` for the newest transcript whose header `cwd` matches the window working directory.
+[Pi](https://pi.dev) is a Node.js-based CLI with JSONL v3 transcripts. Install or check CCGram's Pi command hooks with:
+
+```bash
+ccgram hook --provider pi --install
+ccgram hook --provider pi --status
+```
+
+CCGram writes `SessionStart`, `Stop`, `SessionEnd`, and `Notification` entries to `~/.pi/agent/hooks.json`. Set `PI_CODING_AGENT_DIR` to use another Pi agent directory for both hook configuration and transcript discovery. Existing top-level event maps are preserved; if an object-valued `hooks` map exists, it takes precedence, matching hook-runner behavior.
+
+Pi must load the existing `cc-thingz` `hook-runner` extension. CCGram installs hook commands but does not install or replace the extension. The runner caches hook configuration and does not watch the file. Restart Pi or reload the extension after changes. Without the runner, session tracking falls back to scanning transcripts under `~/.pi/agent/sessions/`.
 
 ### Launch
 

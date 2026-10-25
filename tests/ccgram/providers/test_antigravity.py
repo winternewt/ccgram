@@ -9,12 +9,11 @@ from ccgram.providers import (
     resolve_launch_command,
 )
 from ccgram.providers.process_detection import classify_provider_from_args
+from ccgram.session_protocol.messages import SourceEntry, build_messages, parse_records
 from ccgram.providers.antigravity import (
     AntigravityProvider,
-    clean_antigravity_content,
     get_antigravity_brain_dirs,
     resolve_antigravity_executable,
-    resolve_antigravity_role,
 )
 
 
@@ -33,37 +32,44 @@ class TestAntigravityCapabilities:
         assert "settings" in caps.tui_picker_commands
 
 
-class TestAntigravityContentCleaning:
-    def test_clean_user_request_tags(self):
-        raw = "<USER_REQUEST>\nexplain the project structure\n</USER_REQUEST>"
-        cleaned = clean_antigravity_content(raw)
-        assert cleaned == "explain the project structure"
-
-    def test_clean_metadata_blocks(self):
-        raw = (
-            "<USER_REQUEST>\nhelp me debug\n</USER_REQUEST>\n"
-            "<ADDITIONAL_METADATA>\ntime: 2026-08-06\n</ADDITIONAL_METADATA>\n"
-            "<USER_SETTINGS_CHANGE>\nmodel changed\n</USER_SETTINGS_CHANGE>"
+class TestAntigravityCanonicalTranscript:
+    def test_user_request_metadata_is_removed_by_shared_parser(self):
+        entry = SourceEntry(
+            0,
+            {
+                "type": "USER_INPUT",
+                "source": "USER_EXPLICIT",
+                "content": (
+                    "<USER_REQUEST>help me debug</USER_REQUEST>"
+                    "<ADDITIONAL_METADATA>time: today</ADDITIONAL_METADATA>"
+                ),
+            },
         )
-        cleaned = clean_antigravity_content(raw)
-        assert cleaned == "help me debug"
 
+        messages = build_messages([entry], "conv", "antigravity")
 
-class TestAntigravityRoleResolution:
-    @pytest.mark.parametrize(
-        ("entry_type", "source", "expected"),
-        [
-            ("USER_INPUT", "USER_EXPLICIT", "user"),
-            ("USER_INPUT", "USER_IMPLICIT", "user"),
-            ("user", "user", "user"),
-            ("PLANNER_RESPONSE", "MODEL", "assistant"),
-            ("model", "model", "assistant"),
-            ("info", "system", "assistant"),
-        ],
-    )
-    def test_role_resolution(self, entry_type, source, expected):
-        entry = {"type": entry_type, "source": source}
-        assert resolve_antigravity_role(entry) == expected
+        assert len(messages) == 1
+        assert messages[0].role == "user"
+        assert messages[0].parts[0].text == "help me debug"
+
+    def test_model_source_is_normalized_by_shared_parser(self):
+        records, _ = parse_records(
+            [
+                SourceEntry(
+                    0,
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "source": "MODEL",
+                        "content": "answer",
+                    },
+                )
+            ],
+            "antigravity",
+        )
+
+        assert len(records) == 1
+        assert records[0][1].role == "agent"
+        assert records[0][1].parts[0]["text"] == "answer"
 
 
 class TestAntigravityExecutableAndDataResolution:
@@ -423,42 +429,45 @@ class TestAntigravityResumeAndContinue:
             provider.make_launch_args(resume_id="invalid/id; rm -rf /")
 
 
-class TestAntigravityToolCallParsing:
-    def test_tool_call_and_result_parsing(self):
-        provider = AntigravityProvider()
-        entries = [
-            {
-                "step_index": 0,
-                "source": "MODEL",
-                "type": "PLANNER_RESPONSE",
-                "created_at": "2026-08-06T09:50:47Z",
-                "tool_calls": [{"id": "call-1", "name": "run_command"}],
-            },
-            {
-                "step_index": 1,
-                "source": "MODEL",
-                "type": "RUN_COMMAND",
-                "tool_call_id": "call-1",
-                "created_at": "2026-08-06T09:50:48Z",
-                "content": "command output result",
-            },
-        ]
-        messages, pending = provider.parse_transcript_entries(entries, {})
-        assert len(messages) == 2
+class TestCanonicalAntigravityTranscript:
+    @staticmethod
+    def _messages(entries: list[dict]):
+        return build_messages(
+            [SourceEntry(offset, entry) for offset, entry in enumerate(entries)],
+            "antigravity-test",
+            "antigravity",
+        )
 
-        assert messages[0].content_type == "tool_use"
-        assert messages[0].tool_name == "run_command"
-        assert messages[0].tool_use_id == "call-1"
+    def test_tool_result_completes_normalized_call(self):
+        messages = self._messages(
+            [
+                {
+                    "step_index": 0,
+                    "source": "MODEL",
+                    "type": "PLANNER_RESPONSE",
+                    "created_at": "2026-08-06T09:50:47Z",
+                    "tool_calls": [{"id": "call-1", "name": "run_command"}],
+                },
+                {
+                    "step_index": 1,
+                    "source": "MODEL",
+                    "type": "RUN_COMMAND",
+                    "tool_call_id": "call-1",
+                    "created_at": "2026-08-06T09:50:48Z",
+                    "content": "command output result",
+                },
+            ]
+        )
+        assert len(messages) == 1
+        tool = messages[0].parts[0]
+        assert tool.type == "tool"
+        assert tool.name == "run_command"
+        assert tool.tool_call_id == "call-1"
+        assert tool.status == "completed"
+        assert tool.output == {"text": "command output result", "truncated": False}
 
-        assert messages[1].content_type == "tool_result"
-        assert messages[1].tool_name == "run_command"
-        assert messages[1].tool_use_id == "call-1"
-        assert messages[1].text == "command output result"
-        assert "call-1" not in pending
-
-    def test_incremental_read_preserves_pending_tools(self):
-        provider = AntigravityProvider()
-        batch1 = [
+    def test_result_records_can_be_read_in_a_later_batch(self):
+        first = [
             {
                 "step_index": 0,
                 "source": "MODEL",
@@ -466,11 +475,7 @@ class TestAntigravityToolCallParsing:
                 "tool_calls": [{"id": "call-inc", "name": "list_dir"}],
             }
         ]
-        msgs1, pending = provider.parse_transcript_entries(batch1, {})
-        assert len(msgs1) == 1
-        assert pending.get("call-inc") == "list_dir"
-
-        batch2 = [
+        second = [
             {
                 "step_index": 1,
                 "source": "MODEL",
@@ -479,63 +484,69 @@ class TestAntigravityToolCallParsing:
                 "content": "file1.py\nfile2.py",
             }
         ]
-        msgs2, pending_after = provider.parse_transcript_entries(batch2, pending)
-        assert len(msgs2) == 1
-        assert msgs2[0].content_type == "tool_result"
-        assert msgs2[0].tool_name == "list_dir"
-        assert "call-inc" not in pending_after
+        first_records, _ = parse_records(
+            [SourceEntry(offset, entry) for offset, entry in enumerate(first)],
+            "antigravity",
+        )
+        second_records, _ = parse_records(
+            [SourceEntry(offset + 1, entry) for offset, entry in enumerate(second)],
+            "antigravity",
+        )
+        assert first_records[0][1].parts[0]["tool_call_id"] == "call-inc"
+        assert second_records[0][1].results == (
+            ("call-inc", "file1.py\nfile2.py", False),
+        )
 
-    def test_malformed_entries_handled_safely(self):
-        provider = AntigravityProvider()
-        entries = [
-            {"invalid": True},
-            {"type": "PLANNER_RESPONSE", "tool_calls": "not-a-list"},
-            {"type": "RUN_COMMAND", "content": None},
-            {"type": "USER_INPUT", "content": [{"text": 1}, {"text": None}]},
-        ]
-        messages, pending = provider.parse_transcript_entries(entries, {})
-        assert isinstance(messages, list)
-        assert isinstance(pending, dict)
+    def test_malformed_entries_are_ignored_safely(self):
+        records, _ = parse_records(
+            [
+                SourceEntry(0, {"invalid": True}),
+                SourceEntry(
+                    1, {"type": "PLANNER_RESPONSE", "tool_calls": "not-a-list"}
+                ),
+                SourceEntry(2, {"type": "RUN_COMMAND", "content": None}),
+                SourceEntry(
+                    3, {"type": "USER_INPUT", "content": [{"text": 1}, {"text": None}]}
+                ),
+            ],
+            "antigravity",
+        )
+        assert len(records) == 1
+        assert records[0][1].role == "user"
+        assert records[0][1].parts[0]["text"] == "1"
 
-    def test_tool_batch_processor_matching_by_tool_use_id(self):
+    def test_tool_batch_matching_uses_canonical_call_id(self):
         from ccgram.handlers.messaging_pipeline.message_task import ContentTask
         from ccgram.handlers.messaging_pipeline.tool_batch import (
             ToolBatch,
             ToolBatchEntry,
         )
 
-        provider = AntigravityProvider()
-        entries = [
-            {
-                "step_index": 0,
-                "source": "MODEL",
-                "type": "PLANNER_RESPONSE",
-                "tool_calls": [{"id": "tool-call-abc", "name": "run_command"}],
-            },
-            {
-                "step_index": 1,
-                "source": "MODEL",
-                "type": "RUN_COMMAND",
-                "tool_call_id": "tool-call-abc",
-                "content": "output text",
-            },
-        ]
-        messages, _ = provider.parse_transcript_entries(entries, {})
-
-        tool_use_msg = messages[0]
-        tool_res_msg = messages[1]
-
-        assert tool_use_msg.tool_use_id == "tool-call-abc"
-        assert tool_res_msg.tool_use_id == "tool-call-abc"
-
+        messages = self._messages(
+            [
+                {
+                    "step_index": 0,
+                    "source": "MODEL",
+                    "type": "PLANNER_RESPONSE",
+                    "tool_calls": [{"id": "tool-call-abc", "name": "run_command"}],
+                },
+                {
+                    "step_index": 1,
+                    "source": "MODEL",
+                    "type": "RUN_COMMAND",
+                    "tool_call_id": "tool-call-abc",
+                    "content": "output text",
+                },
+            ]
+        )
+        tool = messages[0].parts[0]
         task = ContentTask(
             window_id="@1",
             content_type="tool_result",
-            tool_name=tool_res_msg.tool_name,
-            tool_use_id=tool_res_msg.tool_use_id,
-            parts=(tool_res_msg.text,),
+            tool_name=tool.name,
+            tool_use_id=tool.tool_call_id,
+            parts=(tool.output["text"],),
         )
-
         batch = ToolBatch(
             window_id="@1",
             thread_id=123,
@@ -547,9 +558,9 @@ class TestAntigravityToolCallParsing:
                 )
             ],
         )
-
         matching_entry = next(
-            (e for e in batch.entries if e.tool_use_id == task.tool_use_id), None
+            (entry for entry in batch.entries if entry.tool_use_id == task.tool_use_id),
+            None,
         )
         assert matching_entry is not None
         assert matching_entry.tool_name == "run_command"

@@ -16,6 +16,12 @@ from ccgram.telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS
 from ccgram.thread_router import ThreadRouter
 
 
+def _core_adapter(result: tuple[bool, str] = (True, "closed")) -> MagicMock:
+    adapter = MagicMock()
+    adapter.close = AsyncMock(return_value=result)
+    return adapter
+
+
 @pytest.fixture(autouse=True)
 def _patch_deps():
     with (
@@ -67,7 +73,7 @@ class TestHandleSessionsKillConfirm:
         router.bind_thread(100, 42, "@5", chat_id=-100)
         router.bind_thread(200, 99, "@5", chat_id=-200)
         router.bind_thread(300, 10, "@9", chat_id=-300)
-        mock_tm.kill_window = AsyncMock()
+        adapter = _core_adapter()
 
         query = AsyncMock()
         bot = AsyncMock()
@@ -82,9 +88,9 @@ class TestHandleSessionsKillConfirm:
             ),
             patch("ccgram.handlers.topics.topic_deletion.session_manager"),
         ):
-            await handle_sessions_kill_confirm(query, 100, "@5", bot)
+            await handle_sessions_kill_confirm(query, 100, "@5", bot, adapter)
 
-        mock_tm.kill_window.assert_called_once_with("@5")
+        adapter.close.assert_awaited_once_with("@5")
         assert {
             (call.args[0], call.args[1], call.kwargs["rate_limit_args"])
             for call in bot.delete_forum_topic.await_args_list
@@ -103,7 +109,7 @@ class TestHandleSessionsKillConfirm:
         _, _, mock_tm, _ = _patch_deps
         router = self._router()
         router.bind_thread(100, 42, "@5", chat_id=-999)
-        mock_tm.kill_window = AsyncMock()
+        adapter = _core_adapter()
 
         query = AsyncMock()
         bot = AsyncMock()
@@ -118,9 +124,9 @@ class TestHandleSessionsKillConfirm:
             ),
             patch("ccgram.handlers.topics.topic_deletion.session_manager"),
         ):
-            await handle_sessions_kill_confirm(query, 100, "@5", bot)
+            await handle_sessions_kill_confirm(query, 100, "@5", bot, adapter)
 
-        mock_tm.kill_window.assert_not_called()
+        adapter.close.assert_not_awaited()
         bot.delete_forum_topic.assert_awaited_once_with(
             -999, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
         )
@@ -132,7 +138,7 @@ class TestHandleSessionsKillConfirm:
         _, _, mock_tm, mock_clear = _patch_deps
         router = self._router()
         router.bind_thread(100, 42, "@5", chat_id=-999)
-        mock_tm.kill_window = AsyncMock()
+        adapter = _core_adapter()
 
         query = AsyncMock()
         bot = AsyncMock()
@@ -149,9 +155,9 @@ class TestHandleSessionsKillConfirm:
             ),
             patch("ccgram.handlers.topics.topic_deletion.session_manager"),
         ):
-            await handle_sessions_kill_confirm(query, 100, "@5", bot)
+            await handle_sessions_kill_confirm(query, 100, "@5", bot, adapter)
 
-        mock_tm.kill_window.assert_awaited_once_with("@5")
+        adapter.close.assert_awaited_once_with("@5")
         bot.delete_forum_topic.assert_awaited_once_with(
             -999, 42, rate_limit_args=NO_RETRY_RATE_LIMIT_ARGS
         )
@@ -173,12 +179,12 @@ class TestHandleSessionsKillConfirm:
         mock_tm.list_windows_for_reconciliation = AsyncMock(
             return_value=[WindowRef(window_id="@5", window_name="proj", cwd="/p")]
         )
-        mock_tm.kill_window = AsyncMock()
+        adapter = _core_adapter()
 
         query = AsyncMock()
         bot = AsyncMock()
         with patch("ccgram.handlers.sessions_dashboard.safe_edit") as mock_edit:
-            await handle_sessions_kill_confirm(query, 100, "@5", bot)
+            await handle_sessions_kill_confirm(query, 100, "@5", bot, adapter)
             mock_edit.assert_called_once()
             text = mock_edit.call_args[0][1]
             assert "Killed" in text
@@ -188,7 +194,7 @@ class TestHandleSessionsKillConfirm:
         router = self._router()
         router.bind_thread(100, 42, "9f1c2d3e-4a5b", chat_id=-100)
         router.bind_thread(200, 99, "9F1C2D3E-4A5B", chat_id=-200)
-        mock_tm.kill_window = AsyncMock()
+        adapter = _core_adapter()
 
         query = AsyncMock()
         bot = AsyncMock()
@@ -203,9 +209,11 @@ class TestHandleSessionsKillConfirm:
             ),
             patch("ccgram.handlers.topics.topic_deletion.session_manager"),
         ):
-            await handle_sessions_kill_confirm(query, 100, "9f1c2d3e-4a5b", bot)
+            await handle_sessions_kill_confirm(
+                query, 100, "9f1c2d3e-4a5b", bot, adapter
+            )
 
-        mock_tm.kill_window.assert_awaited_once_with("9f1c2d3e-4a5b")
+        adapter.close.assert_awaited_once_with("9f1c2d3e-4a5b")
         assert {
             (call.args[0], call.args[1], call.kwargs["rate_limit_args"])
             for call in bot.delete_forum_topic.await_args_list
@@ -236,13 +244,13 @@ class TestKillNeedsConfirmedLiveness:
         mock_tr.iter_thread_bindings.return_value = [(100, 42, "@5")]
         mock_tm.find_window_by_id = AsyncMock(return_value=None)
         mock_tm.list_windows_for_reconciliation = AsyncMock(return_value=None)
-        mock_tm.kill_window = AsyncMock()
+        adapter = _core_adapter()
 
         query = AsyncMock()
         with patch("ccgram.handlers.sessions_dashboard.safe_edit") as edit:
-            await handle_sessions_kill_confirm(query, 100, "@5", AsyncMock())
+            await handle_sessions_kill_confirm(query, 100, "@5", AsyncMock(), adapter)
 
-        mock_tm.kill_window.assert_not_called()
+        adapter.close.assert_not_awaited()
         mock_tr.unbind_thread.assert_not_called()
         mock_clear.assert_not_called()
         assert "Could not reach" in edit.call_args[0][1]
@@ -258,11 +266,11 @@ class TestKillRequiresTheKillToSucceed:
         mock_tm.list_windows_for_reconciliation = AsyncMock(
             return_value=[WindowRef(window_id="@5", window_name="proj", cwd="/p")]
         )
-        mock_tm.kill_window = AsyncMock(return_value=False)
+        adapter = _core_adapter((False, "failed"))
 
         query = AsyncMock()
         with patch("ccgram.handlers.sessions_dashboard.safe_edit") as edit:
-            await handle_sessions_kill_confirm(query, 100, "@5", AsyncMock())
+            await handle_sessions_kill_confirm(query, 100, "@5", AsyncMock(), adapter)
 
         mock_tr.unbind_thread.assert_not_called()
         mock_clear.assert_not_called()

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ccgram.dev/protocol/v1/schemas/CreateSession.json",
+  "title": "CreateSession",
+  "type": "object",
+  "properties": {
+    "directory": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "normal"
+      ]
+    },
+    "worktree": {
+      "type": "boolean"
+    },
+    "branch": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "workspaceId": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "directory",
+    "provider"
+  ],
+  "additionalProperties": true
+}

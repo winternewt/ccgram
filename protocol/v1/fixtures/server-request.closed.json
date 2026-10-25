@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "epoch": "e_example",
+  "class": "durable",
+  "type": "request.closed",
+  "data": {
+    "requestId": "r_00000000000000000000000002",
+    "reason": "answered"
+  },
+  "sessionId": "s_00000000000000000000000001",
+  "seq": 10
+}

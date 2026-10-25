@@ -8,9 +8,8 @@ command after CLI flags have been applied to the environment.
 Module-level imports stay minimal on purpose: ``run_bot``,
 ``start_miniapp_if_enabled``, and ``stop_miniapp_if_enabled`` lazy-load
 ``config``, ``utils``, ``tmux_manager``, ``bot.create_bot``, and
-``miniapp`` so that ``ccgram doctor`` / ``status`` / ``hook`` (which
-import ``main`` only for ``_shutdown_signal`` and ``__version__``) do
-not pay PTB or aiohttp startup cost.
+``miniapp`` so that ``ccgram doctor`` / ``status`` / ``hook`` do not
+pay PTB or aiohttp startup cost.
 """
 
 import asyncio
@@ -25,14 +24,17 @@ import structlog
 if TYPE_CHECKING:
     from aiohttp import web
 
-# Set by the upgrade handler to trigger os.execv() after run_polling() returns
-_restart_requested = False
-
 # Tracks which signal triggered shutdown (0 = none/clean exit)
 _shutdown_signal = 0
 
 # Mini App server runner — populated when CCGRAM_MINIAPP_BASE_URL is set.
 _miniapp_runner: "web.AppRunner | None" = None
+
+
+def _shutdown_reason() -> str:
+    if _shutdown_signal:
+        return f"Received {signal.Signals(_shutdown_signal).name}"
+    return "Clean exit"
 
 
 def _on_signal(signum: int) -> None:
@@ -47,9 +49,8 @@ def _on_signal(signum: int) -> None:
     """
     global _shutdown_signal
     _shutdown_signal = signum
-    # Lazy: bot imports main's shutdown signal for its notification text, so
-    # the watchdog cannot be imported at module scope without a cycle. Arm it
-    # before raising: a wedge after this point must not outlive the timeout.
+    # Lazy: CLI-only commands must not load the bot; arm before raising so
+    # a wedge during graceful shutdown cannot outlive the timeout.
     from .bot import arm_shutdown_watchdog
 
     # 128 + signum matches the re-raise path below, so a supervisor that
@@ -333,21 +334,34 @@ def run_bot() -> None:
     dev = "+dev" if "+unknown" in __version__ or ".dev" in __version__ else ""
     logger.info("Starting ccgram %s%s", __version__, dev)
     # Lazy: main runs `ccgram` startup; defer imports until the relevant subcommand executes
-    from .bot import create_bot, polling_conflict_requires_restart
+    from .bot import (
+        GET_SHUTDOWN_REASON_KEY,
+        REQUEST_RESTART_KEY,
+        create_bot,
+        polling_conflict_requires_restart,
+    )
 
     # Create the loop here so signal handlers can be registered on it before
     # run_polling() blocks. PTB's __run reuses the loop set via set_event_loop.
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    restart_requested = False
+
+    def request_restart() -> None:
+        nonlocal restart_requested
+        restart_requested = True
+
     application = create_bot()
+    application.bot_data[REQUEST_RESTART_KEY] = request_restart
+    application.bot_data[GET_SHUTDOWN_REASON_KEY] = _shutdown_reason
     _install_signal_handlers(loop)
     application.run_polling(
         allowed_updates=["message", "callback_query"],
         stop_signals=None,
     )
 
-    if _restart_requested:
+    if restart_requested:
         logger.info("Restarting bot via os.execv(%s)", sys.argv)
         os.execv(sys.argv[0], sys.argv)
 

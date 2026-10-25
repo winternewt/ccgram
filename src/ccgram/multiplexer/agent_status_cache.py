@@ -1,11 +1,10 @@
 """Backend-neutral push-updated agent-status cache.
 
 The herdr event-stream consumer writes the latest native ``AgentStatus`` per
-window here; the status-polling layer (``observe._native_agent_status``) reads
-it synchronously instead of forking a ``herdr`` subprocess every tick. This
-bridges the push stream and the existing poll loop (the "augment" reconcile):
-push keeps the cache fresh, the poll reads it, and a one-shot subprocess
-``agent_status()`` is the cold-cache fallback.
+window here; Telegram status polling and shared-core bulk refreshes read it
+instead of repeating native probes. On backends without a push stream, optional
+status enrichment caches only negative probe results briefly and leaves positive
+results live so transitions remain visible.
 
 Pure module — depends only on the seam value type (``AgentStatus``), never on a
 concrete backend, so the polling layer can import it without crossing the F1
@@ -27,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 _NEGATIVE_TTL = 15.0
 _POSITIVE_TTL = 90.0
+_PASS_THROUGH_NEGATIVE_TTL = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +108,17 @@ def _store_entry(window_id: str, entry: _CacheEntry) -> None:
     _cache[window_id] = entry
 
 
+def _entry_for_probe_result(
+    result: AgentStatus | None, cache_positive: bool
+) -> _CacheEntry | None:
+    if result is None:
+        ttl = _NEGATIVE_TTL if cache_positive else _PASS_THROUGH_NEGATIVE_TTL
+        return _CacheEntry(None, _clock() + ttl)
+    if cache_positive:
+        return _CacheEntry(result, _clock() + _POSITIVE_TTL)
+    return None
+
+
 def set_status(window_id: str, status: AgentStatus) -> None:
     """Record the latest push-reported agent status for *window_id*."""
     _bump_generation(window_id)
@@ -123,17 +134,21 @@ def get_status(window_id: str) -> AgentStatus | None:
 async def get_status_or_probe(
     window_id: str,
     probe: Callable[[], Awaitable[AgentStatus | None]],
+    *,
+    cache_positive: bool = True,
 ) -> AgentStatus | None:
     """Read a fresh cache entry, probing once on a miss.
 
-    Pushed and successful probe results expire after 90 seconds; each push
-    refreshes that TTL. Empty probe results are cached for 15 seconds.
-    Concurrent callers share a probe. A newer push wins over a probe already
-    in flight, and clear/reset invalidates an older probe even when the cache
-    was cold at invalidation.
+    By default, pushed and successful probe results expire after 90 seconds;
+    each push refreshes that TTL. Empty probe results are cached for 15 seconds.
+    Callers without a push stream can set ``cache_positive=False``: positive
+    results then pass through live, while empty results are cached for five
+    seconds. Concurrent callers share a probe. A newer push wins over a probe
+    already in flight, and clear/reset invalidates an older probe even when the
+    cache was cold at invalidation.
     """
     hit, status = _get_entry(window_id)
-    if hit:
+    if hit and (status is None or cache_positive):
         return status
 
     state = _retain_generation(window_id)
@@ -181,12 +196,12 @@ async def get_status_or_probe(
             hit, status = _get_entry(window_id)
             return status if hit else None
 
-        if result is None:
-            entry = _CacheEntry(None, _clock() + _NEGATIVE_TTL)
-        else:
-            entry = _CacheEntry(result, _clock() + _POSITIVE_TTL)
-        _store_entry(window_id, entry)
-        _bump_generation(window_id)
+        entry = _entry_for_probe_result(result, cache_positive)
+        if entry is not None:
+            _store_entry(window_id, entry)
+            _bump_generation(window_id)
+        # A pass-through positive is still shared by current co-waiters, but
+        # does not become a stale cache entry or a newer generation.
         return result
     finally:
         _release_generation(window_id, state)

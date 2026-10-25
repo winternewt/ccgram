@@ -272,6 +272,13 @@ class TestLogThrottled:
         assert "k1" in _throttle_state
         assert _throttle_state["k1"][1] == "hello world"
 
+    def test_warning_level_is_throttled(self):
+        log = MagicMock()
+        log_throttled(log, "k1", "problem %s", "socket", level="warning")
+        log_throttled(log, "k1", "problem %s", "socket", level="warning")
+        log.warning.assert_called_once_with("problem %s", "socket")
+        log.debug.assert_not_called()
+
     def test_duplicate_within_cooldown_suppressed(self):
         t = 100.0
         log = structlog.get_logger()

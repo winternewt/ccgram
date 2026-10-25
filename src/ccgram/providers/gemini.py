@@ -26,15 +26,10 @@ import re
 import shlex
 import time
 import tomllib
-from typing import Any, cast
 
 from ccgram.providers._jsonl import JsonlProvider
-from ccgram.tool_format import format_tool_line
 from ccgram.providers.base import (
-    AgentMessage,
-    ContentType,
     DiscoveredCommand,
-    MessageRole,
     ProviderCapabilities,
     RESUME_ID_RE,
     SessionStartEvent,
@@ -88,13 +83,6 @@ _GEMINI_BUILTINS: dict[str, str] = {
 }
 
 # Gemini role → our MessageRole mapping
-_GEMINI_ROLE_MAP: dict[str, MessageRole] = {
-    "user": "user",
-    "gemini": "assistant",
-    # Gemini emits informational/error messages as separate record types.
-    "info": "assistant",
-    "error": "assistant",
-}
 
 # ── Gemini CLI UI patterns ──────────────────────────────────────────────
 #
@@ -252,7 +240,6 @@ def _box_is_interactive(box_text: str) -> bool:
 
 
 _TRANSCRIPT_MAX_AGE_SECS = 120.0
-_MAX_TOOL_SUMMARY = 200
 _SHORT_SESSION_ID_LEN = 8
 _SHORT_SESSION_ID_THRESHOLD = 10
 _JSON_READ_ERRORS = (OSError, json.JSONDecodeError)
@@ -308,138 +295,6 @@ def build_hardened_gemini_launch_command(command: str) -> str:
         return command
     quoted_path = shlex.quote(str(settings_path))
     return f"env GEMINI_CLI_SYSTEM_SETTINGS_PATH={quoted_path} {command}"
-
-
-def _extract_gemini_text(value: Any) -> str:
-    """Extract visible text from Gemini content/displayContent payloads."""
-    if isinstance(value, str):
-        return value
-    if not isinstance(value, list):
-        return ""
-
-    parts: list[str] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        text = item.get("text")
-        if isinstance(text, str) and text:
-            parts.append(text)
-            continue
-        content = item.get("content")
-        if isinstance(content, str) and content:
-            parts.append(content)
-    return "".join(parts)
-
-
-def _entry_text(entry: dict[str, Any]) -> str:
-    """Extract human-visible message text from a Gemini transcript entry."""
-    text = _extract_gemini_text(entry.get("content"))
-    if text:
-        return text
-    return _extract_gemini_text(entry.get("displayContent"))
-
-
-def _summarize_tool_args(args: Any) -> str:
-    """Create a short summary from Gemini tool-call args."""
-    if not isinstance(args, dict):
-        return ""
-    preferred = (
-        "cmd",
-        "command",
-        "file_path",
-        "dir_path",
-        "path",
-        "pattern",
-        "query",
-        "url",
-    )
-    for key in preferred:
-        value = args.get(key)
-        if isinstance(value, str) and value:
-            return value[:_MAX_TOOL_SUMMARY]
-    for value in args.values():
-        if isinstance(value, str) and value:
-            return value[:_MAX_TOOL_SUMMARY]
-    return ""
-
-
-def _extract_tool_result_text(tool_call: dict[str, Any]) -> str:
-    """Extract tool-result text from a Gemini tool-call payload."""
-    result_display = tool_call.get("resultDisplay")
-    if isinstance(result_display, str) and result_display:
-        return result_display
-
-    result = tool_call.get("result")
-    if not isinstance(result, list):
-        return ""
-    for item in result:
-        if not isinstance(item, dict):
-            continue
-        function_response = item.get("functionResponse")
-        if not isinstance(function_response, dict):
-            continue
-        response = function_response.get("response")
-        if not isinstance(response, dict):
-            continue
-        for key in ("output", "error", "result"):
-            value = response.get(key)
-            if isinstance(value, str) and value:
-                return value
-    return ""
-
-
-def _emit_tool_calls(
-    tool_calls: list[Any],
-    entry: dict[str, Any],
-    pending: dict[str, Any],
-) -> list[AgentMessage]:
-    """Emit tool_use / tool_result messages from a Gemini toolCalls list.
-
-    Skips re-announcing a tool whose id is already in ``pending`` (Gemini
-    re-appends the same message line on every toolCalls update). Emits
-    ``tool_result`` once a result payload becomes available and pops the
-    tool from ``pending``.
-    """
-    out: list[AgentMessage] = []
-    timestamp = entry.get("timestamp")
-    for tc in tool_calls:
-        if not isinstance(tc, dict):
-            continue
-        raw_name = tc.get("displayName") or tc.get("name") or "unknown"
-        tool_name = raw_name if isinstance(raw_name, str) else "unknown"
-        call_id = tc.get("id")
-        tool_use_id = call_id if isinstance(call_id, str) and call_id else None
-        already_announced = bool(tool_use_id) and tool_use_id in pending
-        if tool_use_id:
-            pending[tool_use_id] = tool_name
-        if not already_announced:
-            summary = _summarize_tool_args(tc.get("args"))
-            tool_use_text = format_tool_line(tool_name, summary)
-            out.append(
-                AgentMessage(
-                    text=tool_use_text,
-                    role="assistant",
-                    content_type="tool_use",
-                    tool_use_id=tool_use_id,
-                    tool_name=tool_name,
-                    timestamp=timestamp,
-                )
-            )
-        result_text = _extract_tool_result_text(tc)
-        if result_text:
-            out.append(
-                AgentMessage(
-                    text=result_text,
-                    role="assistant",
-                    content_type="tool_result",
-                    tool_use_id=tool_use_id,
-                    tool_name=tool_name,
-                    timestamp=timestamp,
-                )
-            )
-            if tool_use_id:
-                pending.pop(tool_use_id, None)
-    return out
 
 
 def _read_project_alias(config_dir: Path, resolved_cwd: str) -> str:
@@ -628,77 +483,6 @@ class GeminiProvider(JsonlProvider):
         return ""
 
     # ── Gemini-specific transcript parsing ────────────────────────────
-
-    def parse_transcript_entries(
-        self,
-        entries: list[dict[str, Any]],
-        pending_tools: dict[str, Any],
-        cwd: str | None = None,  # noqa: ARG002
-    ) -> tuple[list[AgentMessage], dict[str, Any]]:
-        """Parse Gemini transcript entries into AgentMessages.
-
-        Gemini messages use ``type`` field ("user"/"gemini"/"info"/"error")
-        instead of ``role`` and support mixed content formats (string or list
-        of text fragments). Tool calls are emitted as ``tool_use`` and
-        ``tool_result`` messages when possible.
-        """
-        messages: list[AgentMessage] = []
-        pending = dict(pending_tools)
-        # Gemini's JSONL transcript re-appends the same message id on every
-        # toolCalls update (see chatRecordingService.pushMessage upstream).
-        # Track seen message ids to avoid duplicate text emission; track
-        # tool_use ids in `pending` so we only announce a tool once and emit
-        # tool_result on the update that carries the result payload.
-        seen_msg_ids: set[str] = pending.setdefault("__seen_msg_ids__", set())
-
-        for entry in entries:
-            msg_type = entry.get("type", "")
-            role = _GEMINI_ROLE_MAP.get(msg_type)
-            if not role:
-                continue
-
-            entry_id = entry.get("id")
-            msg_id = entry_id if isinstance(entry_id, str) else ""
-
-            tool_calls = entry.get("toolCalls", [])
-            if isinstance(tool_calls, list):
-                messages.extend(_emit_tool_calls(tool_calls, entry, pending))
-
-            text = _entry_text(entry)
-            if text and msg_id not in seen_msg_ids:
-                messages.append(
-                    AgentMessage(
-                        text=text,
-                        role=cast(MessageRole, role),
-                        content_type=cast(ContentType, "text"),
-                        timestamp=entry.get("timestamp"),
-                    )
-                )
-
-            if msg_id:
-                seen_msg_ids.add(msg_id)
-
-        return messages, pending
-
-    def is_user_transcript_entry(self, entry: dict[str, Any]) -> bool:
-        """Check if this Gemini entry is a human turn."""
-        return entry.get("type") == "user"
-
-    def parse_history_entry(self, entry: dict[str, Any]) -> AgentMessage | None:
-        """Parse a single Gemini transcript entry for history display."""
-        msg_type = entry.get("type", "")
-        role = _GEMINI_ROLE_MAP.get(msg_type)
-        if not role:
-            return None
-        text = _entry_text(entry)
-        if not text:
-            return None
-        return AgentMessage(
-            text=text,
-            role=cast(MessageRole, role),
-            content_type="text",
-            timestamp=entry.get("timestamp"),
-        )
 
     @staticmethod
     def _candidate_chats_dirs(

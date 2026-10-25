@@ -120,7 +120,7 @@ Change session binding logic:
 
 Adjust transcript/status parsing:
 
-- Provider-specific in `providers/*.py`. Shared in `transcript_parser.py` / `terminal_parser.py`. Entry-type dispatch is in the small `_handle_*` functions inside `transcript_parser.py`; add new entry types there without touching the public `parse_entries` signature.
+- Transcript normalization lives in `session_protocol/messages.py` (`parse_records`, `build_messages`). Telegram formatting lives in `transcript_reader.py`; history and live delivery share the canonical records. Terminal status detection remains in `providers/*.py` and `terminal_parser.py`. See `docs/protocol/implementation.md`.
 
 Change hook event record or session-map record schema:
 

@@ -1,0 +1,19 @@
+{
+  "id": "conv/file#0",
+  "type": "file",
+  "text": null,
+  "toolCallId": null,
+  "name": "test.py",
+  "kind": null,
+  "status": null,
+  "title": null,
+  "input": null,
+  "output": null,
+  "diff": null,
+  "url": "/v1/uploads/u_example",
+  "width": null,
+  "height": null,
+  "mime": "text/plain",
+  "size": 20,
+  "level": null
+}

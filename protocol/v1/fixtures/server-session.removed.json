@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "epoch": "e_example",
+  "class": "durable",
+  "type": "session.removed",
+  "data": {
+    "reason": "target_gone"
+  },
+  "sessionId": "s_00000000000000000000000001",
+  "seq": 10
+}

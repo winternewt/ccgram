@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from http import HTTPStatus
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 from telegram.error import TelegramError
@@ -26,6 +27,8 @@ from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...multiplexer.base import canonical_window_id
 from ..telegram_origin import send_telegram_to_window
+from ...session_protocol.telegram import TelegramSessionAdapter, adapter_for
+from ...session_protocol.models import ProtocolError
 from ...user_preferences import user_preferences
 from ... import window_query
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
@@ -65,7 +68,7 @@ class WindowLaunchRequest:
     thread_id: int | None
     provider_name: str
     cwd: str
-    mode: str
+    mode: Literal["normal", "yolo"]
     pending_text: str | None
     chat_id: int | None = None
     # Worktree metadata is NOT carried in this request. It flows through
@@ -135,21 +138,19 @@ async def _abort_topic_creation(
 
 async def _create_topic_window(
     selected_path: str,
-    launch_command: str | None,
+    provider_name: str,
+    approval_mode: Literal["normal", "yolo"],
     chosen_workspace_id: str | None,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> tuple[bool, str, str, str]:
-    """Create the topic's window, returning ``(success, message, name, id)``.
-
-    Native worktree delegation (herdr): when the flow carries a pending worktree
-    intent, one ``worktree create`` makes the checkout + grouped workspace + the
-    window in a single step. Gated on ``native_worktrees``; tmux always takes the
-    ``create_window`` branch (its worktree was already created on disk earlier).
-    """
+    """Create a topic session through the shared session service."""
     ud = context.user_data
     wt_repo = ud.get(PENDING_WORKTREE_REPO) if ud else None
     wt_branch = ud.get(PENDING_WORKTREE_BRANCH) if ud else None
     wt_path = ud.get(PENDING_WORKTREE_PATH) if ud else None
+    data: dict[str, Any] = {"provider": provider_name, "directory": selected_path}
+    if chosen_workspace_id:
+        data["workspaceId"] = chosen_workspace_id
     if tmux_manager.capabilities.native_worktrees and wt_repo and wt_branch and wt_path:
         # The native worktree API cannot pin a preselected workspace.  Creating
         # into an implicit workspace would violate the user's selection.
@@ -160,40 +161,28 @@ async def _create_topic_window(
                 "",
                 "",
             )
-        success, message, name, window_id = await tmux_manager.create_worktree_window(
-            wt_repo,
-            wt_path,
-            wt_branch,
-            window_name=Path(wt_path).name,
-            launch_command=launch_command,
-        )
-        return success, message, name, window_id
-    # Tmux and agterm create normal durable windows. Herdr uses its guarded
-    # native topic-target transaction.
-    if tmux_manager.capabilities.native_topic_targets is not True:
-        success, message, name, window_id = await tmux_manager.create_window(
-            selected_path,
-            launch_command=launch_command,
-            workspace_id=chosen_workspace_id,
-        )
-        return success, message, name, window_id
+        data["directory"] = wt_repo
+        data["worktree"] = True
+        data["branch"] = wt_branch
     try:
-        target = await tmux_manager.create_topic_target(
-            selected_path,
-            launch_command=launch_command,
-            workspace_id=chosen_workspace_id,
+        created = await adapter_for(context.bot_data).create(
+            data, approval_mode=approval_mode
         )
-    except RuntimeError as exc:
-        return False, str(exc), "", ""
+    except ProtocolError as exc:
+        if exc.status < HTTPStatus.INTERNAL_SERVER_ERROR:
+            return False, exc.message, "", ""
+        raise
     return (
         True,
-        f"Created topic target '{target.label}'",
-        target.label,
-        target.target_id,
+        f"Created topic target '{created.title}'",
+        created.title,
+        created.target_id,
     )
 
 
-async def _wait_for_shell_ready(window_id: str, *, attempts: int = 5) -> None:
+async def _wait_for_shell_ready(
+    window_id: str, adapter: TelegramSessionAdapter, *, attempts: int = 5
+) -> None:
     """Wait for a freshly created tmux window to show a shell prompt."""
     # Lazy: only needed inside the shell-detection branch
     import os
@@ -202,52 +191,76 @@ async def _wait_for_shell_ready(window_id: str, *, attempts: int = 5) -> None:
     from ccgram.providers.shell import KNOWN_SHELLS
 
     for _ in range(attempts):
-        w = await tmux_manager.find_window_by_id(window_id)
-        if w and w.pane_current_command:
-            cmd = os.path.basename(w.pane_current_command.split()[0]).lstrip("-")
+        try:
+            target, _ = await adapter.resolve(window_id)
+        except ProtocolError:
+            target = None
+        if target and target.foreground_argv:
+            cmd = os.path.basename(target.foreground_argv[0]).lstrip("-")
             if cmd in KNOWN_SHELLS:
                 return
         await asyncio.sleep(0.2)
 
 
-async def agent_process_started(window_id: str) -> bool | None:
-    """Whether a non-shell process owns the pane right now; None if unknown.
+async def agent_process_started(
+    window_id: str,
+    adapter: TelegramSessionAdapter,
+    *,
+    expected_provider: str | None = None,
+) -> bool | None:
+    """Inspect launch readiness once, without waiting.
 
-    One probe, no waiting: callers decide whether to retry (launch) or leave
-    the claim quarantined (recovery). ``None`` means the backend could not
-    answer, not that the agent is gone.
+    Return None if resolution fails or no foreground argv is reported.
+    Return False for a shell or, with ``expected_provider``, an unavailable
+    target or another provider. True means a non-shell process, also available
+    and matching when ``expected_provider`` is supplied.
     """
-    # Lazy: only needed for hookless providers
+    # Lazy: only launch/recovery flows need process inspection.
     import os
 
     # Lazy: providers package heavy bootstrap
     from ccgram.providers.shell import KNOWN_SHELLS
 
-    w = await tmux_manager.find_window_by_id(window_id)
-    if w is None or not w.pane_current_command:
+    try:
+        target, _ = await adapter.resolve(window_id)
+    except ProtocolError:
         return None
-    cmd = os.path.basename(w.pane_current_command.split()[0]).lstrip("-")
+    if not target.foreground_argv:
+        return None
+    if expected_provider is not None and (
+        not target.available or target.provider != expected_provider
+    ):
+        return False
+    cmd = os.path.basename(target.foreground_argv[0]).lstrip("-")
     return cmd not in KNOWN_SHELLS
 
 
-async def _wait_for_agent_process(window_id: str, *, attempts: int = 50) -> bool:
-    """Wait for a hookless agent CLI to replace the shell as the pane's process.
+async def _wait_for_agent_process(
+    window_id: str,
+    adapter: TelegramSessionAdapter,
+    *,
+    attempts: int = 50,
+    expected_provider: str | None = None,
+) -> bool:
+    """Wait for a non-shell foreground, matching the provider when specified.
 
-    Without this, the first poll sees the launch shell and treats the agent as
-    already exited, killing the window before the CLI has started. Returns
-    True once a non-shell process owns the pane; False means the pane still
-    shows a launch shell after the whole budget, so the caller must not bind
-    the topic as if the agent had started.
+    SessionStart can precede terminal readiness. A timeout leaves the launch
+    quarantined rather than sending its first prompt to an unknown process.
     """
     for _ in range(attempts):
-        if await agent_process_started(window_id):
+        if await agent_process_started(
+            window_id, adapter, expected_provider=expected_provider
+        ):
             return True
         await asyncio.sleep(0.2)
     return False
 
 
 async def _accept_yolo_confirmation(
-    window_id: str, *, timeout: float | None = None
+    window_id: str,
+    adapter: TelegramSessionAdapter,
+    *,
+    timeout: float | None = None,
 ) -> bool:
     """Detect and accept Claude Code's bypass permissions confirmation prompt.
 
@@ -265,9 +278,9 @@ async def _accept_yolo_confirmation(
             "no, exit" in lower or "i accept" in lower
         ):
             await asyncio.sleep(0.3)
-            await tmux_manager.send_keys(window_id, "Down", enter=False, literal=False)
-            await asyncio.sleep(0.15)
-            await tmux_manager.send_keys(window_id, "Enter", enter=False, literal=False)
+            success, _ = await adapter.send_keys(window_id, ["Down", "Enter"])
+            if not success:
+                return False
             logger.info("Accepted bypass permissions prompt for window %s", window_id)
             return True
         if "⏵⏵ bypass permissions" in lower:
@@ -448,7 +461,9 @@ async def _finish_failed_provisioning(  # noqa: C901
             topic_orchestration.clear_pending_creation(target_id)
             return True
         try:
-            target_confirmed_absent = await tmux_manager.kill_window(target_id)
+            target_confirmed_absent, _ = await adapter_for(context.bot_data).close(
+                target_id
+            )
         except BaseException:  # noqa: BLE001
             return False
         if target_confirmed_absent:
@@ -462,7 +477,9 @@ async def _finish_failed_provisioning(  # noqa: C901
     target_confirmed_absent = target_id is None or target_already_absent
     if target_id is not None and not target_already_absent:
         try:
-            target_confirmed_absent = await tmux_manager.kill_window(target_id)
+            target_confirmed_absent, _ = await adapter_for(context.bot_data).close(
+                target_id
+            )
         except BaseException:  # noqa: BLE001
             _mark_provisioning_uncertain(claim_id)
             return False
@@ -500,16 +517,11 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
     prevents the SessionMonitor from auto-creating a topic while Herdr publishes
     a session identity or before ``bind_thread`` runs below.
     """
-    # Lazy: providers package heavy bootstrap
-    from ccgram.providers import resolve_launch_command
-
     user_id = request.user_id
     pending_thread_id = request.thread_id
     selected_path = request.cwd
     provider_name = request.provider_name
     approval_mode = request.mode
-
-    launch_command = resolve_launch_command(provider_name, approval_mode=approval_mode)
 
     query_message = query.message
     chat = query_message.chat if query_message else None
@@ -549,7 +561,8 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
             creation, creation_was_cancelled = await _await_creation_result(
                 _create_topic_window(
                     selected_path,
-                    launch_command,
+                    provider_name,
+                    approval_mode,
                     chosen_workspace_id,
                     context,
                 )
@@ -671,8 +684,10 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
         from ..shell.shell_prompt_orchestrator import ensure_setup
 
         try:
-            await _wait_for_shell_ready(created_wid)
-            await ensure_setup(created_wid, "auto")
+            await _wait_for_shell_ready(created_wid, adapter_for(context.bot_data))
+            await ensure_setup(
+                created_wid, "auto", adapter=adapter_for(context.bot_data)
+            )
         except BaseException as exc:  # noqa: BLE001
             created_wid = _follow_supersession(created_wid, claim_id=claim_id)
             await _finish_failed_provisioning(
@@ -689,19 +704,30 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
     provider = provider_registry.get(provider_name)
     try:
         if approval_mode == "yolo" and provider.capabilities.has_yolo_confirmation:
-            await _accept_yolo_confirmation(created_wid)
+            await _accept_yolo_confirmation(created_wid, adapter_for(context.bot_data))
 
         if provider.capabilities.supports_hook:
             map_entry_found = await session_map_sync.wait_for_session_map_entry(
                 created_wid, resolve_window_id=window_query.resolve_window_alias
             )
+            if map_entry_found:
+                # SessionStart can arrive before the terminal reports the CLI.
+                map_entry_found = await _wait_for_agent_process(
+                    created_wid,
+                    adapter_for(context.bot_data),
+                    expected_provider=provider_name,
+                )
         elif provider_caps.chat_first_command_path:
             map_entry_found = True
         else:
             # Only a pane that actually left its launch shell may be bound;
             # a timed-out wait reuses the quarantine path below instead of
             # reporting success for a window the next poll would kill.
-            map_entry_found = await _wait_for_agent_process(created_wid)
+            map_entry_found = await _wait_for_agent_process(
+                created_wid,
+                adapter_for(context.bot_data),
+                expected_provider=provider_name,
+            )
     except BaseException as exc:  # noqa: BLE001
         created_wid = _follow_supersession(created_wid, claim_id=claim_id)
         await _finish_failed_provisioning(
@@ -718,8 +744,8 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
     created_wid = _follow_supersession(created_wid, claim_id=claim_id)
 
     if not map_entry_found:
-        # A hook-registration timeout does not prove that the new terminal is
-        # dead. Re-read presence before deciding whether the target may be
+        # Registration/readiness timeout does not prove the terminal is dead.
+        # Re-read presence before deciding whether the target may be
         # aborted; live or unknown targets remain quarantined for recovery.
         # Lazy: reconciliation imports the active multiplexer backend.
         from ...multiplexer.reconciliation import window_presence
@@ -749,7 +775,7 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 failure_message="session target is gone",
                 target_already_absent=True,
             )
-            message = "Session did not register with ccgram and is gone"
+            message = "Session target is gone"
             await _abort_topic_creation(query, message, context)
             return WindowLaunchResult(success=False, error_message=message)
 
@@ -757,11 +783,12 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
         if claim_id is not None:
             topic_orchestration.clear_pending_creation(created_wid)
         message = (
-            "Session is still starting; ccgram kept it quarantined for recovery. "
-            "Try again after it finishes registering."
+            "Session is still starting or its foreground is unverified; "
+            "ccgram kept it quarantined for recovery. Try again once the selected "
+            "provider is running. Custom launch scripts must exec the provider CLI."
         )
-        # Keep pending thread/text state so the recovery flow can finish the
-        # exact topic once the late hook registration becomes observable.
+        # Retain the exact topic and first-message state while registration or
+        # matching foreground evidence is still unavailable.
         await safe_edit(query, f"⚠ {message}")
         return WindowLaunchResult(success=False, error_message=message)
 
@@ -794,8 +821,8 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
         )
         session_manager.flush_state()
 
-    # The target either has a hook record or never needed one. This also clears
-    # the no-thread path, which otherwise has no topic bind to release the guard.
+    # The provider-specific creation checks passed. Release the guard also for
+    # the no-thread path, which has no topic bind to release it.
     topic_orchestration.clear_pending_creation(created_wid)
     if pending_thread_id is None:
         await safe_edit(query, f"✅ {message}")
@@ -843,6 +870,7 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 created_wid,
                 pending_text,
                 chat_id=chat.id if chat else None,
+                adapter=adapter_for(context.bot_data),
             )
         else:
             send_ok, send_msg = await send_telegram_to_window(
@@ -851,6 +879,7 @@ async def launch_window(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 pending_thread_id,
                 pending_text,
                 chat.id if chat else None,
+                adapter=adapter_for(context.bot_data),
             )
             if not send_ok:
                 logger.warning(

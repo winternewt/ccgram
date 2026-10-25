@@ -17,6 +17,7 @@ identical topic IDs in separate chats from sharing interactive callbacks.
 
 import asyncio
 import contextlib
+import hashlib
 import re
 import time
 
@@ -84,6 +85,7 @@ _interactive_contexts: dict[InteractiveKey, tuple[int, int]] = {}
 # a direct choice is used. This invalidates delayed or double-tapped choices.
 _interactive_sequences: dict[InteractiveKey, int] = {}
 _interactive_contents: dict[InteractiveKey, str] = {}
+_interactive_prompt_fingerprints: dict[InteractiveKey, str | None] = {}
 
 # Cooldown to prevent flood when interactive sends fail repeatedly
 _send_cooldowns: dict[InteractiveKey, float] = {}
@@ -247,6 +249,7 @@ def clear_interactive_mode(
     _interactive_contexts.pop(ikey, None)
     _interactive_sequences.pop(ikey, None)
     _interactive_contents.pop(ikey, None)
+    _interactive_prompt_fingerprints.pop(ikey, None)
 
 
 def get_interactive_msg_id(
@@ -353,12 +356,48 @@ def parse_direct_choices(content: str) -> tuple[tuple[str, str], ...]:
     return (("y", "Yes"), ("n", "No")) if inline_yes_no else ()
 
 
-def _next_interactive_sequence(ikey: InteractiveKey, content: str) -> int:
-    """Return the sequence for *content*, advancing when the prompt changes."""
-    if _interactive_contents.get(ikey) != content:
+def _next_interactive_sequence(
+    ikey: InteractiveKey,
+    content: str,
+    prompt_fingerprint: str | None = None,
+) -> int:
+    """Return the sequence, advancing when rendered or terminal prompt changes."""
+    if (
+        _interactive_contents.get(ikey) != content
+        or _interactive_prompt_fingerprints.get(ikey) != prompt_fingerprint
+    ):
         _interactive_contents[ikey] = content
+        _interactive_prompt_fingerprints[ikey] = prompt_fingerprint
         _interactive_sequences[ikey] = _interactive_sequences.get(ikey, 0) + 1
     return _interactive_sequences.setdefault(ikey, 1)
+
+
+def get_interactive_prompt_fingerprint(
+    user_id: int,
+    thread_id: int | None,
+    chat_id: int | None,
+    message_id: int | None,
+) -> str | None:
+    """Return the captured terminal prompt fingerprint for this live keyboard."""
+    if chat_id is None or message_id is None:
+        return None
+    ikey = _interactive_key(user_id, thread_id, chat_id)
+    if _interactive_msgs.get(ikey) != message_id:
+        return None
+    return _interactive_prompt_fingerprints.get(ikey)
+
+
+def is_current_interactive_message(
+    user_id: int,
+    thread_id: int | None,
+    chat_id: int | None,
+    message_id: int | None,
+) -> bool:
+    """Whether the callback belongs to the currently rendered keyboard."""
+    if chat_id is None or message_id is None:
+        return False
+    ikey = _interactive_key(user_id, thread_id, chat_id)
+    return _interactive_msgs.get(ikey) == message_id
 
 
 def is_current_interactive_prompt(
@@ -682,6 +721,9 @@ async def handle_interactive_ui(
         return False
 
     ui_name, content, advisory = captured
+    prompt_fingerprint = (
+        None if advisory else hashlib.sha256(content.encode()).hexdigest()
+    )
     # Advisory detections (structural guesses) show the keyboard but
     # never latch blocking interactive mode: only a named pattern or a
     # transcript tool_use may block. Advisory sends also retire any
@@ -695,7 +737,7 @@ async def handle_interactive_ui(
         else chat_id
     )
     ikey = _interactive_key(user_id, thread_id, resolved_chat_id)
-    sequence = _next_interactive_sequence(ikey, text)
+    sequence = _next_interactive_sequence(ikey, text, prompt_fingerprint)
     keyboard = _build_interactive_keyboard(
         window_id,
         ui_name=ui_name,
@@ -779,6 +821,7 @@ async def clear_interactive_msg(
     _interactive_contexts.pop(ikey, None)
     _interactive_sequences.pop(ikey, None)
     _interactive_contents.pop(ikey, None)
+    _interactive_prompt_fingerprints.pop(ikey, None)
     _send_cooldowns.pop(ikey, None)
     logger.debug(
         "Clear interactive msg: user=%d, thread=%s, chat=%s, msg_id=%s",

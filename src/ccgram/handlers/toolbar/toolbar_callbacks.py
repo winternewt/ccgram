@@ -4,7 +4,7 @@ Callback data scheme: ``tb:<window_id>:<action_name>``. The action_name is
 looked up in the loaded ``ToolbarConfig.actions`` and dispatched by
 ``action_type``:
 
-  - ``key``    → ``tmux_manager.send_keys(payload, enter=False, literal=...)``
+  - ``key``    → shared session adapter terminal-key action
   - ``text``   → origin-aware terminal injection with Enter
   - ``builtin`` → dispatched via ``_BUILTIN_DISPATCH`` to a specialized handler
 
@@ -26,7 +26,6 @@ from telegram.error import TelegramError
 
 from ...window_query import view_window
 from ...thread_router import thread_router
-from ...multiplexer import multiplexer as tmux_manager
 from ...toolbar_config import ToolbarAction
 from ..callback_data import CB_TOOLBAR
 from ..callback_helpers import get_thread_id, user_owns_window
@@ -42,7 +41,7 @@ logger = structlog.get_logger()
 
 
 async def _dispatch_key(
-    action: ToolbarAction, query: CallbackQuery, window_id: str
+    action: ToolbarAction, query: CallbackQuery, window_id: str, adapter
 ) -> None:
     """Send a tmux key for a ``key`` action.
 
@@ -50,13 +49,22 @@ async def _dispatch_key(
     label in place to reflect the new state — the button text is the
     state indicator. No popups, no disruptive dialogs.
     """
-    w = await tmux_manager.find_window_by_id(window_id)
-    if w is None:
-        await query.answer("Window not found", show_alert=True)
+    if action.literal:
+        sent, detail = await adapter.send_text(
+            window_id,
+            action.payload,
+            submit=False,
+            action_id=f"telegram-callback:{query.id}",
+        )
+    else:
+        sent, detail = await adapter.send_keys(
+            window_id,
+            [action.payload],
+            action_id=f"telegram-callback:{query.id}",
+        )
+    if not sent:
+        await query.answer(detail or "Unable to send key", show_alert=True)
         return
-    await tmux_manager.send_keys(
-        w.window_id, action.payload, enter=False, literal=action.literal
-    )
     if action.read_state:
         short_label = await refresh_button_label(action, query, window_id)
         await query.answer(f"{action.emoji} {short_label}")
@@ -70,18 +78,17 @@ async def _dispatch_text(
     user_id: int,
     window_id: str,
     thread_id: int | None,
+    adapter,
 ) -> None:
     """Send literal text + Enter for a ``text`` action."""
-    w = await tmux_manager.find_window_by_id(window_id)
-    if w is None:
-        await query.answer("Window not found", show_alert=True)
-        return
     success, error = await send_telegram_to_window(
         user_id,
-        w.window_id,
+        window_id,
         thread_id,
         action.payload,
         query.message.chat.id if query.message else None,
+        adapter=adapter,
+        action_id=f"telegram-callback:{query.id}",
     )
     if not success:
         await query.answer(error or "Failed to send action", show_alert=True)
@@ -131,12 +138,14 @@ async def _builtin_ctrlc(
     _context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     """Builtin: send Ctrl-C."""
-    w = await tmux_manager.find_window_by_id(window_id)
-    if w is None:
-        await query.answer("Window not found", show_alert=True)
-        return
-    await tmux_manager.send_keys(w.window_id, "C-c", enter=False, literal=False)
-    await query.answer("\u23f9 Ctrl-C sent")
+    # Lazy: toolbar callback modules load during registration; only Ctrl-C
+    # needs the protocol backend/provider graph at dispatch time.
+    from ...session_protocol.telegram import adapter_for
+
+    sent, detail = await adapter_for(_context.bot_data).send_keys(
+        window_id, ["C-c"], action_id=f"telegram-callback:{query.id}"
+    )
+    await query.answer("\u23f9 Ctrl-C sent" if sent else detail, show_alert=not sent)
 
 
 async def _builtin_live(
@@ -309,9 +318,19 @@ async def handle_toolbar_callback(
         await query.answer(f"Unknown action: {action_name}", show_alert=True)
         return
     if action.action_type == "key":
-        await _dispatch_key(action, query, window_id)
+        # Lazy: text-only and builtin buttons do not need the key adapter.
+        from ...session_protocol.telegram import adapter_for
+
+        adapter = adapter_for(context.bot_data)
+        await _dispatch_key(action, query, window_id, adapter)
     elif action.action_type == "text":
-        await _dispatch_text(action, query, user_id, window_id, get_thread_id(update))
+        # Lazy: this path validates and injects text through the protocol core.
+        from ...session_protocol.telegram import adapter_for
+
+        adapter = adapter_for(context.bot_data)
+        await _dispatch_text(
+            action, query, user_id, window_id, get_thread_id(update), adapter
+        )
     elif action.action_type == "builtin":
         handler = _BUILTIN_DISPATCH.get(action.payload)
         if handler is None:

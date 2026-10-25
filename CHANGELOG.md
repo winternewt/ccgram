@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.18.4] - 2026-10-25
+
+### Reliable session cleanup
+
+- Fix dead-window cleanup stopping when topic deletion changes recipient bindings. Other affected topics now continue through the existing safety checks ([#350](https://github.com/alexei-led/ccgram/pull/350)).
+- Separate event observation, Telegram cleanup, and runtime shutdown state while preserving shared mobile-core boundaries. Shutdown notices read the current reason through a runtime callback instead of private CLI state.
+
+### Upgrade
+
+No configuration or state migration is required. Upgrade with your installation method, then restart ccgram when ready:
+
+```console
+uv tool upgrade ccgram
+# Or, for Homebrew installations:
+brew upgrade ccgram
+```
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.18.3...v4.18.4)
+
+## [4.17.0] - 2026-10-21
+
+### Shared session core for Telegram and mobile
+
+Telegram and the optional mobile API now control the same terminal agents through
+one session core ([#330](https://github.com/alexei-led/ccgram/pull/330)). Agents keep
+running in their existing terminals, with no SDK wrapper or second agent process.
+
+### Added
+- Add the authenticated `ccgram/1` HTTP/WebSocket API with device pairing and revocation, structured history, agent requests, uploads, terminal controls, and bounded event replay. See the [API setup guide](https://github.com/alexei-led/ccgram/blob/v4.17.0/docs/protocol/operations.md).
+- Publish versioned schemas and shared server/client fixtures in `protocol/v1/`. The native iOS app, APNs, and a Telegram-free process remain future work.
+
+### Changed
+- Route Telegram input and session controls through the shared executor, including atomic shell submission and prompt setup. Binding checks, input locks, and durable action IDs also protect mobile input.
+- Normalize provider transcripts once for both clients. Telegram keeps its rendering, delivery receipts, and restart-safe checkpoints.
+
+### Upgrade
+1. Stop existing ccgram processes before upgrading. Only one core per backend is allowed for each OS user, even across configuration directories and tmux session names. For multiple Telegram groups, use the [single-core setup](https://github.com/alexei-led/ccgram/blob/v4.17.0/docs/guides.md#multi-instance-setup). A second process with the same backend cannot start.
+2. Upgrade with your installation method, then restart ccgram:
+
+   ```console
+   uv tool upgrade ccgram
+   # Or, for Homebrew installations:
+   brew upgrade ccgram
+   ```
+
+3. Keep `protocol.sqlite3` and `uploads/` with the ccgram state after first startup. Removing the database loses action deduplication records. The mobile listener stays disabled until `CCGRAM_API_PORT` is set. Existing Telegram credentials are still required.
+
+[Full Changelog](https://github.com/alexei-led/ccgram/compare/v4.16.0...v4.17.0)
+
 ## [4.16.0] - 2026-10-08
 
 ### Added

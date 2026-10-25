@@ -328,10 +328,10 @@ async def test_send_forwards_to_send_keys(mgr: TmuxManager) -> None:
 
 async def test_send_to_pane_forwards(mgr: TmuxManager) -> None:
     mgr.send_keys_to_pane = AsyncMock(return_value=True)  # type: ignore[method-assign]
-    ok = await mgr.send_to_pane("%2", "hi", enter=True, literal=True, window_id="@0")
+    ok = await mgr.send_to_pane("%2", "hi", enter=False, literal=True, window_id="@0")
     assert ok is True
     mgr.send_keys_to_pane.assert_awaited_once_with(
-        "%2", "hi", enter=True, literal=True, window_id="@0"
+        "%2", "hi", enter=False, literal=True, window_id="@0"
     )
 
 

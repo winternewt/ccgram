@@ -275,7 +275,9 @@ class TestBootstrapIdentity:
             AsyncMock(return_value=True),
         )
 
-        result = await discover_and_register_transcript("@9", _window=w)
+        result = await discover_and_register_transcript(
+            "@9", _window=w, adapter=MagicMock()
+        )
 
         assert result is True  # gate passed, not False
         assert set_provider_calls == [("@9", "pi", "/project")]
@@ -299,7 +301,9 @@ class TestBootstrapIdentity:
         with patch(
             "ccgram.handlers.recovery.transcript_discovery._bootstrap_identity"
         ) as spy:
-            result = await discover_and_register_transcript("@9", _window=w)
+            result = await discover_and_register_transcript(
+                "@9", _window=w, adapter=MagicMock()
+            )
 
         spy.assert_not_called()
         assert result is True

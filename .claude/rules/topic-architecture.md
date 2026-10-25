@@ -1,6 +1,6 @@
 # Topic-Only Architecture
 
-The bot operates exclusively in Telegram Forum (topics) mode. No `active_sessions`, no `/list`, no General topic routing, no backward-compat for non-topic modes.
+The Telegram adapter operates in Forum topics mode. Its topic routing remains separate from the optional mobile session list in `session_protocol/`. `GET /v1/sessions` includes eligible targets with no Telegram topic. No Telegram `active_sessions` store or non-topic routing is introduced.
 
 ## 1 Topic = 1 Window = 1 Session
 
@@ -54,7 +54,9 @@ Outbound (user → Claude):
 ```
 User sends "hello" in topic (thread_id=42)
   → thread_bindings[user_id][42] → "@0"
-  → send_to_window("@0", "hello")   # resolves via find_window_by_id
+  → TelegramSessionAdapter.send_text("@0", "hello", action_id=...)
+  → ActionExecutor: verified binding, prompt checks, per-target input lock
+  → MultiplexerSessionBackend → backend window
 ```
 
 Inbound (Claude → user):

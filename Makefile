@@ -50,6 +50,7 @@ arch-guard:
 	  tests/ccgram/test_window_store_import_boundary.py \
 	  tests/ccgram/test_multiplexer_contract.py \
 	  tests/ccgram/test_handler_layering_invariants.py \
+	  tests/ccgram/test_runtime_boundaries.py \
 	  tests/ccgram/test_herdr_boundary_audit.py \
 	  tests/ccgram/test_herdr_identity_audit.py \
 	  tests/ccgram/test_herdr_legacy_model_audit.py

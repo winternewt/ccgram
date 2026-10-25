@@ -1,0 +1,10 @@
+{
+  "type": "hello",
+  "data": {
+    "protocol": "ccgram/1",
+    "resume": {
+      "epoch": "e_example",
+      "seq": 9
+    }
+  }
+}

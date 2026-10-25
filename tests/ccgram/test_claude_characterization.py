@@ -17,7 +17,7 @@ from ccgram.terminal_parser import (
 )
 from ccgram.expandable_quote import EXPANDABLE_QUOTE_END, EXPANDABLE_QUOTE_START
 from ccgram.providers.claude import ClaudeProvider
-from ccgram.transcript_parser import TranscriptParser
+from ccgram.session_protocol.messages import SourceEntry, build_messages, parse_records
 
 # ── Hook payload format ──────────────────────────────────────────────────
 
@@ -49,7 +49,9 @@ class TestClaudeProviderMethods:
         with pytest.raises(ValueError, match="Invalid resume_id"):
             provider.make_launch_args(resume_id="not-a-uuid")
 
-    def test_parse_transcript_entries_adapter(self, make_jsonl_entry) -> None:
+    def test_shared_parser_preserves_tool_call_and_result(
+        self, make_jsonl_entry
+    ) -> None:
         entries = [
             make_jsonl_entry(
                 "assistant",
@@ -73,12 +75,16 @@ class TestClaudeProviderMethods:
                 ],
             ),
         ]
-        provider = ClaudeProvider()
-        messages, remaining = provider.parse_transcript_entries(entries, {})
-        tool_msgs = [m for m in messages if m.tool_use_id is not None]
-        assert len(tool_msgs) >= 1
-        assert tool_msgs[0].tool_name == "Read"
-        assert tool_msgs[0].tool_use_id == "tu1"
+        messages = build_messages(
+            [SourceEntry(index * 100, entry) for index, entry in enumerate(entries)],
+            "conv",
+            "claude",
+        )
+
+        assert len(messages) == 1
+        assert messages[0].parts[0].name == "Read"
+        assert messages[0].parts[0].tool_call_id == "tu1"
+        assert messages[0].parts[0].output["text"] == "file contents"
 
     def test_spinner_status_parsed(self) -> None:
         provider = ClaudeProvider()
@@ -112,22 +118,24 @@ class TestClaudeTranscriptFormat:
                 ],
             )
         ]
-        result, _ = TranscriptParser.parse_entries(entries, {})
-        texts = [e.text for e in result]
-        assert plan_text in texts
-        assert any(
-            e.content_type == "tool_use" and e.tool_name == "ExitPlanMode"
-            for e in result
-        )
+        messages = build_messages([SourceEntry(0, entries[0])], "claude-test", "claude")
+        assert len(messages) == 1
+        assert messages[0].parts[0].type == "tool"
+        assert messages[0].parts[0].name == "ExitPlanMode"
+        assert messages[0].parts[0].input == {"plan": plan_text}
 
     def test_summary_entries_skipped(self, make_jsonl_entry) -> None:
         entries = [
             {"type": "summary", "summary": "conversation summary"},
             make_jsonl_entry("assistant", [{"type": "text", "text": "hello"}]),
         ]
-        result, _ = TranscriptParser.parse_entries(entries, {})
-        assert len(result) == 1
-        assert result[0].text == "hello"
+        source = [
+            SourceEntry(index * 100, entry) for index, entry in enumerate(entries)
+        ]
+        records, _ = parse_records(source, "claude")
+        result = build_messages(source, "claude-test", "claude")
+        assert len(records) == len(result) == 1
+        assert result[0].parts[0].text == "hello"
 
     def test_file_history_snapshot_skipped(self) -> None:
         entries = [
@@ -137,8 +145,13 @@ class TestClaudeTranscriptFormat:
                 "message": {"content": [{"type": "text", "text": "hi"}]},
             },
         ]
-        result, _ = TranscriptParser.parse_entries(entries, {})
-        assert len(result) == 1
+        source = [
+            SourceEntry(index * 100, entry) for index, entry in enumerate(entries)
+        ]
+        records, _ = parse_records(source, "claude")
+        result = build_messages(source, "claude-test", "claude")
+        assert len(records) == len(result) == 1
+        assert result[0].parts[0].text == "hi"
 
 
 # ── Terminal signatures ──────────────────────────────────────────────────

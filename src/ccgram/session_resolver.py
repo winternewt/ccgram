@@ -15,21 +15,43 @@ Responsibilities:
 
 from __future__ import annotations
 
-import json
+import asyncio
 import structlog
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-
-import aiofiles
+from typing import Any, Protocol
 
 from .config import config
 from .providers import get_provider_for_window
+from .session_protocol.messages import parse_records, read_entries
+from .session_protocol.models import (
+    HistoryPage,
+    Message,
+    ProtocolError,
+    SessionSnapshot,
+)
 from .thread_router import thread_router
 from .window_state_ports import identity_state
 from .window_state_store import window_store
 
 logger = structlog.get_logger()
+
+
+class _SessionHistoryService(Protocol):
+    async def for_target(self, target_id: str) -> tuple[Any, SessionSnapshot]: ...
+
+    async def history(
+        self,
+        session_id: str,
+        cursor: str | None,
+        limit: int,
+        *,
+        conversation: str | None = None,
+    ) -> HistoryPage: ...
+
+    async def history_by_source_range(
+        self, session_id: str, start_byte: int, end_byte: int | None = None
+    ) -> HistoryPage: ...
 
 
 @dataclass
@@ -44,6 +66,13 @@ class ClaudeSession:
 
 class SessionResolver:
     """Resolves tmux windows to Claude session files and reads message history."""
+
+    def __init__(self) -> None:
+        self._session_service: _SessionHistoryService | None = None
+
+    def bind_session_service(self, service: _SessionHistoryService | None) -> None:
+        """Bind live session queries, or clear the binding during shutdown."""
+        self._session_service = service
 
     def _build_session_file_path(self, session_id: str, cwd: str) -> Path | None:
         """Build the direct file path for a session from session_id and cwd."""
@@ -114,31 +143,31 @@ class SessionResolver:
         """Read a JSONL session file and extract summary and message count."""
         summary = ""
         last_user_msg = ""
-        message_count = 0
         provider = get_provider_for_window(
             window_id, provider_name=identity_state.get_provider_name(window_id)
         )
         try:
-            async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
-                async for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    message_count += 1
-                    try:
-                        data = json.loads(line)
-                        if data.get("type") == "summary":
-                            s = data.get("summary", "")
-                            if s:
-                                summary = s
-                        elif provider.is_user_transcript_entry(data):
-                            parsed = provider.parse_history_entry(data)
-                            if parsed and parsed.text.strip():
-                                last_user_msg = parsed.text.strip()
-                    except json.JSONDecodeError:
-                        continue
+            entries = await asyncio.to_thread(
+                read_entries, file_path, provider.capabilities.name
+            )
         except OSError:
             return None
+
+        for entry in entries:
+            if entry.data.get("type") == "summary":
+                value = entry.data.get("summary")
+                if isinstance(value, str) and value:
+                    summary = value
+        records, _ = parse_records(entries, provider.capabilities.name)
+        for _, record in records:
+            if record.role == "user":
+                text = "\n".join(
+                    part["text"]
+                    for part in record.parts
+                    if isinstance(part.get("text"), str)
+                ).strip()
+                if text:
+                    last_user_msg = text
 
         if not summary:
             summary = last_user_msg[:50] if last_user_msg else "Untitled"
@@ -146,7 +175,7 @@ class SessionResolver:
         return ClaudeSession(
             session_id=session_id,
             summary=summary,
-            message_count=message_count,
+            message_count=len(entries),
             file_path=str(file_path),
         )
 
@@ -234,58 +263,96 @@ class SessionResolver:
         start_byte: int = 0,
         end_byte: int | None = None,
     ) -> tuple[list[dict], int]:
-        """Get user/assistant messages for a window's session.
-
-        Resolves window → session, then reads the JSONL.
-        Supports byte range filtering via start_byte/end_byte.
-        Returns (messages, total_count).
-        """
-        session = await self.resolve_session_for_window(window_id)
-        if not session or not session.file_path:
-            return [], 0
-
-        file_path = Path(session.file_path)
-        if not file_path.exists():
-            return [], 0
-
-        provider = get_provider_for_window(
-            window_id, provider_name=identity_state.get_provider_name(window_id)
-        )
-        entries: list[dict[str, Any]] = []
-        try:
-            async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
-                if start_byte > 0:
-                    await f.seek(start_byte)
-
-                while True:
-                    if end_byte is not None:
-                        current_pos = await f.tell()
-                        if current_pos >= end_byte:
-                            break
-
-                    line = await f.readline()
-                    if not line:
-                        break
-
-                    data = provider.parse_transcript_line(line)
-                    if data:
-                        entries.append(data)
-        except OSError:
-            logger.exception("Error reading session file %s", file_path)
-            return [], 0
-
-        agent_messages, _ = provider.parse_transcript_entries(entries, {})
-        all_messages = [
-            {
-                "role": e.role,
-                "text": e.text,
-                "content_type": e.content_type,
-                "timestamp": e.timestamp,
-            }
-            for e in agent_messages
-        ]
-
+        """Read live history through the session service's bound snapshot."""
+        service = self._session_service
+        if service is None:
+            raise ProtocolError(
+                503, "backend_unavailable", "Session service is not initialized"
+            )
+        _, snapshot = await service.for_target(window_id)
+        if start_byte or end_byte is not None:
+            page = await service.history_by_source_range(
+                snapshot.id, start_byte, end_byte
+            )
+            messages = page.messages
+        else:
+            pages = []
+            page = await service.history(
+                snapshot.id,
+                None,
+                200,
+                conversation=snapshot.conversation.id
+                if snapshot.conversation
+                else None,
+            )
+            pages.append(page)
+            while page.prev_cursor:
+                page = await service.history(
+                    snapshot.id,
+                    page.prev_cursor,
+                    200,
+                    conversation=snapshot.conversation.id
+                    if snapshot.conversation
+                    else None,
+                )
+                pages.append(page)
+            messages = tuple(
+                message
+                for older_page in reversed(pages)
+                for message in older_page.messages
+            )
+        all_messages = _legacy_history_messages(messages)
         return all_messages, len(all_messages)
+
+
+def _legacy_history_messages(messages: tuple[Message, ...]) -> list[dict[str, Any]]:
+    """Keep the current Telegram history DTO over normalized protocol messages."""
+    all_messages: list[dict[str, Any]] = []
+    for message in messages:
+        for part in message.parts:
+            if part.type == "tool" and part.name == "ExitPlanMode":
+                tool_input = part.input
+                plan = tool_input.get("plan") if isinstance(tool_input, dict) else None
+                if isinstance(plan, str) and plan.strip():
+                    all_messages.append(
+                        {
+                            "role": "assistant",
+                            "text": plan.strip(),
+                            "content_type": "text",
+                            "timestamp": message.time,
+                        }
+                    )
+            text = part.text or part.title or part.name or ""
+            content_type = {
+                "text": "text",
+                "thinking": "thinking",
+                "tool": "tool_use",
+            }.get(part.type, part.type)
+            if text:
+                all_messages.append(
+                    {
+                        "role": "user" if message.role == "user" else "assistant",
+                        "text": text,
+                        "content_type": content_type,
+                        "timestamp": message.time,
+                    }
+                )
+            if part.output:
+                output = part.output
+                output_text = (
+                    output.get("text", "") if isinstance(output, dict) else str(output)
+                )
+                if output_text:
+                    all_messages.append(
+                        {
+                            "role": "assistant",
+                            "text": output_text,
+                            "content_type": "tool_result",
+                            "timestamp": message.time,
+                        }
+                    )
+
+    return all_messages
 
 
 session_resolver = SessionResolver()

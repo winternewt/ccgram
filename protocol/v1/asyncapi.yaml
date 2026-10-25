@@ -1,0 +1,68 @@
+{
+  "asyncapi": "3.0.0",
+  "info": {
+    "title": "ccgram/1 event stream",
+    "version": "1.0.0"
+  },
+  "servers": {
+    "local": {
+      "host": "localhost",
+      "pathname": "/v1/stream",
+      "protocol": "wss",
+      "security": [
+        {
+          "$ref": "#/components/securitySchemes/deviceToken"
+        }
+      ]
+    }
+  },
+  "channels": {
+    "stream": {
+      "address": "/v1/stream",
+      "messages": {
+        "server": {
+          "payload": {
+            "$ref": "./schemas/ServerFrame.json"
+          }
+        },
+        "client": {
+          "payload": {
+            "$ref": "./schemas/ClientFrame.json"
+          }
+        }
+      }
+    }
+  },
+  "operations": {
+    "sendEvents": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/stream"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/stream/messages/server"
+        }
+      ]
+    },
+    "receiveSubscriptions": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/stream"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/stream/messages/client"
+        }
+      ]
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "deviceToken": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

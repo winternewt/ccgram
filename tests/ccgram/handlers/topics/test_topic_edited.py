@@ -25,10 +25,14 @@ def allowed_user():
 
 
 @pytest.fixture
-def mux():
-    with patch("ccgram.handlers.topics.topic_lifecycle.tmux_manager") as mock_mux:
-        mock_mux.rename_window = AsyncMock(return_value=True)
-        yield mock_mux
+def session_adapter(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    adapter = MagicMock()
+    adapter.rename = AsyncMock(return_value=(True, "ok"))
+    monkeypatch.setattr(
+        "ccgram.handlers.topics.topic_lifecycle.adapter_for",
+        lambda _bot_data: adapter,
+    )
+    return adapter
 
 
 @pytest.fixture
@@ -59,6 +63,12 @@ def _make_update(
     return update
 
 
+def _make_context() -> MagicMock:
+    context = MagicMock()
+    context.bot_data = {}
+    return context
+
+
 class TestTopicEditedRenamesWindow:
     @pytest.mark.parametrize(
         ("window_id", "old_display"),
@@ -67,7 +77,7 @@ class TestTopicEditedRenamesWindow:
     )
     async def test_rename_reaches_the_multiplexer_proxy(
         self,
-        mux: MagicMock,
+        session_adapter: MagicMock,
         router: MagicMock,
         session: MagicMock,
         window_id: str,
@@ -76,61 +86,64 @@ class TestTopicEditedRenamesWindow:
         router.get_window_for_chat_thread.return_value = window_id
         router.get_display_name.return_value = old_display
 
-        await topic_edited_handler(_make_update("new-name"), MagicMock())
+        await topic_edited_handler(_make_update("new-name"), _make_context())
 
-        mux.rename_window.assert_called_once_with(window_id, "new-name")
+        session_adapter.rename.assert_awaited_once_with(window_id, "new-name")
         session.set_display_name.assert_called_once_with(window_id, "new-name")
 
     async def test_updates_emoji_cache(
-        self, mux: MagicMock, router: MagicMock, session: MagicMock
+        self, session_adapter: MagicMock, router: MagicMock, session: MagicMock
     ) -> None:
         _topic_names[(CHAT_ID, THREAD_ID)] = "old-name"
         router.get_window_for_chat_thread.return_value = "@0"
         router.get_display_name.return_value = "old-name"
 
-        await topic_edited_handler(_make_update("new-name"), MagicMock())
+        await topic_edited_handler(_make_update("new-name"), _make_context())
 
         assert _topic_names[(CHAT_ID, THREAD_ID)] == "new-name"
 
 
 class TestTopicEditedIgnoredEdits:
     async def test_ignores_emoji_only_change(
-        self, mux: MagicMock, router: MagicMock
+        self, session_adapter: MagicMock, router: MagicMock
     ) -> None:
         """The bot itself wrote "🟢 myproject"; the clean name is unchanged."""
         router.get_window_for_chat_thread.return_value = "@0"
         router.get_display_name.return_value = "myproject"
 
-        await topic_edited_handler(_make_update("\U0001f7e2 myproject"), MagicMock())
+        await topic_edited_handler(
+            _make_update("\U0001f7e2 myproject"), _make_context()
+        )
 
-        mux.rename_window.assert_not_called()
+        session_adapter.rename.assert_not_awaited()
 
     async def test_ignores_icon_only_edit(
-        self, mux: MagicMock, router: MagicMock
+        self, session_adapter: MagicMock, router: MagicMock
     ) -> None:
-        await topic_edited_handler(_make_update(None), MagicMock())
+        await topic_edited_handler(_make_update(None), _make_context())
 
         router.get_window_for_chat_thread.assert_not_called()
-        mux.rename_window.assert_not_called()
+        session_adapter.rename.assert_not_awaited()
 
     async def test_ignores_unbound_topic(
-        self, mux: MagicMock, router: MagicMock
+        self, session_adapter: MagicMock, router: MagicMock
     ) -> None:
         router.get_window_for_chat_thread.return_value = None
 
-        await topic_edited_handler(_make_update("new-name"), MagicMock())
+        await topic_edited_handler(_make_update("new-name"), _make_context())
 
-        mux.rename_window.assert_not_called()
+        session_adapter.rename.assert_not_awaited()
 
     async def test_caches_unchanged_when_rename_fails(
-        self, mux: MagicMock, router: MagicMock
+        self, session_adapter: MagicMock, router: MagicMock
     ) -> None:
         _topic_names[(CHAT_ID, THREAD_ID)] = "old-name"
         router.get_window_for_chat_thread.return_value = "@0"
         router.get_display_name.return_value = "old-name"
-        mux.rename_window = AsyncMock(return_value=False)
+        session_adapter.rename = AsyncMock(return_value=(False, "backend refused"))
 
-        await topic_edited_handler(_make_update("new-name"), MagicMock())
+        await topic_edited_handler(_make_update("new-name"), _make_context())
 
         assert _topic_names[(CHAT_ID, THREAD_ID)] == "old-name"
+        session_adapter.rename.assert_awaited_once_with("@0", "new-name")
         router.set_display_name.assert_not_called()

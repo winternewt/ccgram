@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "epoch": "e_example",
+  "class": "control",
+  "type": "welcome",
+  "data": {
+    "epoch": "e_example",
+    "seq": 10,
+    "resumed": false
+  }
+}

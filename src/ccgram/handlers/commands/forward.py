@@ -33,6 +33,7 @@ from ...telegram_client import PTBTelegramClient
 from ...window_state_store import window_store
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
+from ...session_protocol.telegram import adapter_for
 from ..telegram_origin import (
     send_telegram_followup_to_window,
     send_telegram_to_window,
@@ -122,6 +123,8 @@ async def _handle_pi_followup_command(
     args: str,
     cc_slash: str,
     thread_id: int | None,
+    *,
+    adapter,
 ) -> None:
     """Queue a Pi follow-up message via Alt+Enter."""
     if not args:
@@ -134,7 +137,7 @@ async def _handle_pi_followup_command(
         action=ChatAction.TYPING,
     )
     success, error_msg = await send_telegram_followup_to_window(
-        user_id, window_id, thread_id, args, message.chat.id
+        user_id, window_id, thread_id, args, message.chat.id, adapter=adapter
     )
     if not success:
         await safe_reply(message, f"❌ {error_msg}")
@@ -188,7 +191,6 @@ def _arm_rc_probe_if_remote_control(
 
 async def _capture_forward_probe_context(
     window_id: str,
-    provider,
     cc_slash: str,
     status_like: bool,
 ) -> tuple[str | None, int | None, str | None, int | None]:
@@ -199,7 +201,7 @@ async def _capture_forward_probe_context(
         probe_transcript_path,
         probe_transcript_offset,
         probe_pane_before,
-    ) = await _capture_command_probe_context(window_id, provider)
+    ) = await _capture_command_probe_context(window_id)
     return probe_transcript_path, probe_transcript_offset, probe_pane_before, None
 
 
@@ -253,7 +255,7 @@ def _command_update(update: Update, message: Message, command: str) -> Update:
 
 async def forward_command_handler(
     update: Update,
-    _context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE,
     *,
     native_command: str | None = None,
 ) -> None:
@@ -327,7 +329,14 @@ async def forward_command_handler(
 
     if provider_name == "pi" and cc_name.lower() == _PI_FOLLOWUP_COMMAND:
         await _handle_pi_followup_command(
-            update.message, user.id, window_id, display, args, cc_slash, thread_id
+            update.message,
+            user.id,
+            window_id,
+            display,
+            args,
+            cc_slash,
+            thread_id,
+            adapter=adapter_for(context.bot_data),
         )
         return
 
@@ -344,11 +353,16 @@ async def forward_command_handler(
         probe_transcript_offset,
         probe_pane_before,
         status_probe_offset,
-    ) = await _capture_forward_probe_context(window_id, provider, cc_slash, status_like)
+    ) = await _capture_forward_probe_context(window_id, cc_slash, status_like)
 
     lifecycle_strategy.clear_probe_failures(window_id)
     success, error_msg = await send_telegram_to_window(
-        user.id, window_id, thread_id, cc_slash, update.message.chat.id
+        user.id,
+        window_id,
+        thread_id,
+        cc_slash,
+        update.message.chat.id,
+        adapter=adapter_for(context.bot_data),
     )
     if not success:
         logger.warning(

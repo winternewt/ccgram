@@ -1,0 +1,19 @@
+{
+  "id": "conv/notice#0",
+  "type": "notice",
+  "text": "Session started",
+  "toolCallId": null,
+  "name": null,
+  "kind": null,
+  "status": null,
+  "title": null,
+  "input": null,
+  "output": null,
+  "diff": null,
+  "url": null,
+  "width": null,
+  "height": null,
+  "mime": null,
+  "size": null,
+  "level": "info"
+}

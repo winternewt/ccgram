@@ -39,12 +39,13 @@ from ..topics.directory_browser import (
     clear_window_picker_state,
     clear_worktree_state,
 )
-from ..topics.worktree import (
+from ...worktrees import (
     slug_for_path,
     validate_branch_name,
     worktree_path_for,
 )
 from ..interactive import get_interactive_window
+from ..interactive.interactive_ui import get_interactive_prompt_fingerprint
 from ..messaging_pipeline.message_queue import enqueue_status_update
 from ..live.pane_callbacks import apply_pane_rename
 from ..messaging_pipeline.message_sender import (
@@ -55,6 +56,10 @@ from ..messaging_pipeline.message_sender import (
 )
 from ..recovery.recovery_banner import RecoveryBanner, render_banner
 from ..recovery.transcript_discovery import discover_and_register_transcript
+from ...session_protocol.telegram import (
+    TelegramSessionAdapter,
+    adapter_for as protocol_adapter_for,
+)
 from ..polling.polling_state import lifecycle_strategy
 from ..telegram_origin import (
     agent_origin_returned_to_shell,
@@ -363,6 +368,8 @@ async def _handle_dead_window(
     text: str,
     user_data: dict | None,
     message: Message,
+    *,
+    adapter: TelegramSessionAdapter,
 ) -> bool:
     """Show recovery UI or directory browser for a dead (killed) window.
 
@@ -427,7 +434,9 @@ async def _handle_dead_window(
             )
             return True
 
-        returned_to_shell = await discover_and_register_transcript(window_id, _window=w)
+        returned_to_shell = await discover_and_register_transcript(
+            window_id, _window=w, adapter=adapter
+        )
 
     if w is not None and not returned_to_shell:
         lifecycle_strategy.clear_dead_notification(user_id, thread_id)
@@ -509,6 +518,7 @@ async def _dismiss_interactive_prompt(
     chat_id: int,
     text: str,
     message: Message,
+    adapter,
 ) -> bool:
     """Dismiss the topic's interactive prompt; True when safe to forward.
 
@@ -527,24 +537,19 @@ async def _dismiss_interactive_prompt(
         pane_has_interactive_prompt,
     )
 
-    # Lazy: text_handler ↔ polling cycle
-    from ...multiplexer import multiplexer as _mux
-
     pane_id = get_interactive_pane(user_id, thread_id, chat_id=chat_id)
+    expected_prompt = get_interactive_prompt_fingerprint(
+        user_id, thread_id, chat_id, message.message_id
+    )
     escape_sent = False
     try:
-        if pane_id:
-            escape_sent = await _mux.send_keys_to_pane(
-                pane_id,
-                "Escape",
-                enter=False,
-                literal=False,
-                window_id=window_id,
-            )
-        else:
-            escape_sent = await _mux.send_keys(
-                window_id, "Escape", enter=False, literal=False
-            )
+        escape_sent, _ = await adapter.send_keys(
+            window_id,
+            ["Escape"],
+            pane_id=pane_id,
+            action_id=f"telegram-message:{chat_id}:{message.message_id}:dismiss",
+            expected_prompt=expected_prompt,
+        )
     except Exception:  # noqa: BLE001  # escape failure is handled below
         escape_sent = False
 
@@ -588,6 +593,7 @@ async def _forward_message(
     text: str,
     client: TelegramClient,
     message: Message,
+    adapter,
 ) -> None:
     """Forward a text message to the bound tmux window."""
     # Best-effort: a network error here must not drop the user's text (#257).
@@ -614,19 +620,33 @@ async def _forward_message(
     # users in a dismissal loop; 2026-09-25 review: silently
     # FORWARDING after an unconfirmed dismissal is the same bug
     # mirrored).
+    telegram_adapter = adapter
+    action_id = f"telegram-message:{message.chat.id}:{message.message_id}"
     interactive_window = get_interactive_window(
         user_id, thread_id, chat_id=message.chat.id
     )
     interactive_dismissed = False
     if interactive_window and interactive_window == window_id:
         if not await _dismiss_interactive_prompt(
-            user_id, thread_id, window_id, message.chat.id, text, message
+            user_id,
+            thread_id,
+            window_id,
+            message.chat.id,
+            text,
+            message,
+            telegram_adapter,
         ):
             return
         interactive_dismissed = True
 
     success, err_message = await send_telegram_to_window(
-        user_id, window_id, thread_id, text, message.chat.id
+        user_id,
+        window_id,
+        thread_id,
+        text,
+        message.chat.id,
+        adapter=telegram_adapter,
+        action_id=action_id,
     )
     if not success:
         await safe_reply(message, f"\u274c {err_message}")
@@ -733,7 +753,13 @@ async def handle_text_message(
     assert window_id is not None  # _handle_unbound_topic returned False
 
     if await _handle_dead_window(
-        window_id, user.id, thread_id, text, context.user_data, message
+        window_id,
+        user.id,
+        thread_id,
+        text,
+        context.user_data,
+        message,
+        adapter=protocol_adapter_for(context.bot_data),
     ):
         return
 
@@ -745,6 +771,9 @@ async def handle_text_message(
         # Lazy: shell.shell_commands ↔ text_handler via approval callback.
         from ..shell.shell_commands import handle_shell_message
 
+        # Lazy: only a bound shell route needs the protocol backend/provider graph.
+        from ...session_protocol.telegram import adapter_for
+
         await handle_shell_message(
             PTBTelegramClient(context.bot),
             user.id,
@@ -752,10 +781,15 @@ async def handle_text_message(
             window_id,
             text,
             message,
+            adapter=adapter_for(context.bot_data),
         )
         return
 
     # Forward message to window
+    # Lazy: unbound and recovery paths return above without loading the protocol
+    # backend; import it only when a message will reach the session.
+    from ...session_protocol.telegram import adapter_for
+
     await _forward_message(
         window_id,
         user.id,
@@ -763,4 +797,5 @@ async def handle_text_message(
         text,
         PTBTelegramClient(context.bot),
         message,
+        adapter_for(context.bot_data),
     )

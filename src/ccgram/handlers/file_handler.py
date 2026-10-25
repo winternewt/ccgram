@@ -24,6 +24,7 @@ from telegram.constants import ChatAction
 from telegram.error import TelegramError
 from ..config import config
 from ..telegram_client import PTBTelegramClient
+from ..session_protocol.telegram import adapter_for
 from ..window_query import view_window
 from .telegram_origin import send_telegram_to_window
 from ..thread_router import thread_router
@@ -46,6 +47,14 @@ _FILENAME_PUNCT = frozenset("._-")
 
 # Control characters to strip from captions (keep \n and \t)
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+# Control characters a path may never carry into a literal tmux send
+# (unlike captions, \n and \t are included; C1 controls like U+009B are
+# rejected because terminals execute them on echo). Legal nonprinting
+# Unicode such as a no-break space is not a control character and stays
+# allowed, which is why str.isprintable() is the wrong test here: it
+# rejects those legal names too.
+_PATH_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 _MAX_CAPTION_LEN = 500
 
@@ -153,10 +162,9 @@ def _resolve_upload_dir(
     upload_path = Path(view.cwd) / _UPLOAD_DIR
     if not upload_path.is_absolute():
         return window_id, None, "Session working directory is not absolute."
-    if not str(upload_path).isprintable():
-        # A control character in the cwd would split the literal tmux send.
-        # Stricter than _CONTROL_CHAR_RE above: captions keep \n and \t
-        # after collapsing, a path used in a literal send admits neither.
+    if _PATH_CONTROL_RE.search(str(upload_path)):
+        # A control character would split the literal tmux send; see
+        # _PATH_CONTROL_RE for the caption distinction.
         return window_id, None, "Session working directory is not usable."
     return window_id, upload_path, None
 
@@ -227,6 +235,8 @@ async def _upload_and_notify(
     size_label: str,
     claude_msg_tpl: str,
     success_emoji: str,
+    *,
+    adapter,
 ) -> None:
     """Shared upload flow: resolve dir, download, notify Claude, reply to user."""
     window_id, upload_path, error = _resolve_upload_dir(
@@ -256,7 +266,12 @@ async def _upload_and_notify(
         claude_msg += f"\n\nUser note: {_sanitize_caption(caption)}"
 
     success, err = await send_telegram_to_window(
-        user_id, window_id, message.message_thread_id, claude_msg, message.chat.id
+        user_id,
+        window_id,
+        message.message_thread_id,
+        claude_msg,
+        message.chat.id,
+        adapter=adapter,
     )
     if success:
         await ack_reaction(
@@ -270,7 +285,7 @@ async def _upload_and_notify(
 
 
 async def handle_photo_message(
-    update: Update, _context: ContextTypes.DEFAULT_TYPE
+    update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Handle photo uploads: save to .ccgram-uploads/ and notify Claude."""
     user = update.effective_user
@@ -292,11 +307,12 @@ async def handle_photo_message(
         "Photo",
         "I've uploaded an image to {path} — please take a look.",
         "\U0001f4f7",
+        adapter=adapter_for(context.bot_data),
     )
 
 
 async def handle_document_message(
-    update: Update, _context: ContextTypes.DEFAULT_TYPE
+    update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Handle document uploads: save to .ccgram-uploads/ and notify Claude."""
     user = update.effective_user
@@ -318,4 +334,5 @@ async def handle_document_message(
         "File",
         "I've uploaded {name} to {path}",
         "\U0001f4ce",
+        adapter=adapter_for(context.bot_data),
     )

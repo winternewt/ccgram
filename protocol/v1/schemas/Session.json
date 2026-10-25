@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ccgram.dev/protocol/v1/schemas/Session.json",
+  "title": "Session",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^s_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "bindingVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "title": {
+      "type": "string"
+    },
+    "host": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "gitBranch": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "provider": {
+      "type": "string"
+    },
+    "conversation": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "historyLimit": {
+              "type": "string",
+              "enum": [
+                "full",
+                "scrollback"
+              ]
+            },
+            "historyGeneration": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "id",
+            "historyLimit"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "starting",
+            "working",
+            "blocked",
+            "done",
+            "idle",
+            "dead",
+            "unknown"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "hook",
+            "transcript",
+            "native",
+            "screen"
+          ]
+        },
+        "since": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "state",
+        "detail",
+        "source",
+        "since"
+      ],
+      "additionalProperties": true
+    },
+    "approvalMode": {
+      "type": "string"
+    },
+    "panes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "active"
+        ],
+        "additionalProperties": true
+      }
+    },
+    "openRequests": {
+      "type": "array",
+      "items": {
+        "$ref": "Request.json"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "lastActivity": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "id",
+    "bindingVersion",
+    "title",
+    "host",
+    "cwd",
+    "gitBranch",
+    "provider",
+    "conversation",
+    "status",
+    "approvalMode",
+    "panes",
+    "openRequests",
+    "capabilities",
+    "lastActivity"
+  ],
+  "additionalProperties": true
+}

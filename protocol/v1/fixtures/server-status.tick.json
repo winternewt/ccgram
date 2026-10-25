@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "epoch": "e_example",
+  "class": "ephemeral",
+  "type": "status.tick",
+  "data": {
+    "state": "working",
+    "detail": "Running tests"
+  },
+  "sessionId": "s_00000000000000000000000001"
+}

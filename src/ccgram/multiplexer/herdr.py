@@ -1096,12 +1096,13 @@ class HerdrManager:
         enter: bool = True,
         literal: bool = True,
         window_id: str | None = None,
+        raw: bool = True,
     ) -> bool:
         """Reject raw Herdr pane IDs; only a session target may authorize I/O."""
         if window_id is None or pane_id != window_id:
             logger.warning("Rejected raw Herdr pane operation")
             return False
-        return await self.send(window_id, text, enter=enter, literal=literal)
+        return await self.send(window_id, text, enter=enter, literal=literal, raw=raw)
 
     async def _send_to(
         self, pane_id: str, text: str, *, enter: bool, literal: bool

@@ -1,0 +1,55 @@
+{
+  "id": "conv/entry",
+  "revision": 2,
+  "conversationId": "conv",
+  "role": "agent",
+  "time": "2026-10-20T10:33:12Z",
+  "complete": true,
+  "parts": [
+    {
+      "id": "conv/entry#0",
+      "type": "text",
+      "text": "Run the tests.",
+      "toolCallId": null,
+      "name": null,
+      "kind": null,
+      "status": null,
+      "title": null,
+      "input": null,
+      "output": null,
+      "diff": null,
+      "url": null,
+      "width": null,
+      "height": null,
+      "mime": null,
+      "size": null,
+      "level": null
+    },
+    {
+      "id": "conv/entry#1",
+      "type": "tool",
+      "text": null,
+      "toolCallId": "tool1",
+      "name": "Bash",
+      "kind": "execute",
+      "status": "completed",
+      "title": "uv run pytest",
+      "input": {
+        "command": "uv run pytest"
+      },
+      "output": {
+        "text": "passed",
+        "truncated": false
+      },
+      "diff": null,
+      "url": null,
+      "width": null,
+      "height": null,
+      "mime": null,
+      "size": null,
+      "level": null
+    }
+  ],
+  "actionId": null,
+  "phase": null
+}

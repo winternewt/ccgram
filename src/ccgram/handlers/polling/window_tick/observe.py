@@ -20,6 +20,7 @@ from ....providers.base import StatusUpdate
 from ....session_monitor import get_active_monitor
 from ....multiplexer import agent_status_cache
 from ....multiplexer import multiplexer as tmux_manager
+from ....utils import log_throttled
 from ....multiplexer.vim_state import has_insert_indicator, notify_vim_insert_seen
 from ..polling_state import terminal_poll_state, terminal_screen_buffer
 from ..polling_types import TickContext, is_shell_prompt
@@ -115,17 +116,32 @@ async def _native_agent_status(window_id: str) -> StatusUpdate | None:
     """
     if not tmux_manager.capabilities.native_agent_status:
         return None
-    # Push-primary: read the event-stream cache (no subprocess). On a cold cache
-    # (just-bound, before the first push — or a backend without an event stream)
-    # fall back to one ``agent_status`` subprocess call. On event-stream backends
-    # the push keeps the cache warm, so the per-tick subprocess is skipped.
-    if tmux_manager.capabilities.supports_event_stream:
-        native = await agent_status_cache.get_status_or_probe(
-            window_id, lambda: tmux_manager.agent_status(window_id)
+    # Event-stream backends read pushed status and probe once on a cold cache.
+    # Probe-only backends share short-lived negative results with the protocol
+    # refresh, but pass positive results through so status transitions stay live.
+    try:
+        if tmux_manager.capabilities.supports_event_stream:
+            native = await agent_status_cache.get_status_or_probe(
+                window_id, lambda: tmux_manager.agent_status(window_id)
+            )
+        else:
+            native = await agent_status_cache.get_status_or_probe(
+                window_id,
+                lambda: tmux_manager.agent_status(window_id),
+                cache_positive=False,
+            )
+    except Exception as exc:  # noqa: BLE001  # optional enrichment is logged and discarded
+        # Native status is optional enrichment; an unexpected probe failure must
+        # not prevent the rest of this tick or the next poll cycle.
+        log_throttled(
+            logger,
+            f"native-agent-status:{window_id}",
+            "Native agent-status probe failed for window %s: %s",
+            window_id,
+            exc,
+            level="warning",
         )
-    else:
-        # Probe-only backends have no push stream to refresh cached transitions.
-        native = await tmux_manager.agent_status(window_id)
+        return None
     if native is None:
         return None
     if native.state == "working":

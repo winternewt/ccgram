@@ -37,3 +37,17 @@ Dedup: worker compares `last_text` on status updates; identical content skips th
 ## No Truncation
 
 Historical messages (tool_use summaries, tool_result text, user/assistant messages) are kept in full at the parse layer. Long text is handled only at send: `split_message` splits by 4096 limit; real-time messages get `[1/N]` suffixes, history pages get inline keyboard navigation.
+
+## Mobile protocol messages
+
+The rules above describe Telegram rendering and delivery. Mobile history and events
+use the single builder in `session_protocol/messages.py`, with native entry IDs,
+byte-offset fallback IDs, deterministic revisions, and tool-result pairing before
+pagination. Do not feed Telegram-formatted text into this builder. A changed
+`historyGeneration` invalidates cached conversation messages and queued input.
+
+`EventHub` replay is independent of Telegram watermarks. Its remote subscriptions
+have bounded queues and force resync on overflow. Telegram and API actions always
+go through the shared `ActionExecutor`. Telegram uses its in-process adapter; handlers must not call multiplexer mutation methods.
+There is no direct-send exception baseline. Telegram renders canonical transcript
+batches and owns durable receipts independently of mobile replay.

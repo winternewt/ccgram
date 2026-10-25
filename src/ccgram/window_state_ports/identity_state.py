@@ -35,7 +35,7 @@ class IdentityProjection:
 
 def get_identity(window_id: str) -> IdentityProjection | None:
     """Frozen identity projection, or None if no state is tracked."""
-    state = window_store.window_states.get(window_id)
+    state = window_store.window_states.get(_resolve_state_window_id(window_id))
     if state is None:
         return None
     return IdentityProjection(

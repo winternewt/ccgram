@@ -1,8 +1,10 @@
 import importlib
 import json
 import shlex
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import quote
 
@@ -11,9 +13,106 @@ import pytest
 from ccgram import providers as providers_pkg
 from ccgram.providers import resolve_launch_command
 from ccgram.providers.antigravity import AntigravityProvider
+from ccgram.session_protocol.backend import CreationOptions, Prompt, Target
+from ccgram.session_protocol.models import ProtocolError, Status, utc_now
+from ccgram.session_protocol.service import LocalSessionService
+from ccgram.session_protocol.store import ProtocolStore
+from ccgram.thread_router import ThreadRouter
 
 resume_command = importlib.import_module("ccgram.handlers.recovery.resume_command")
 resume_picker = importlib.import_module("ccgram.handlers.recovery.resume_picker")
+
+
+class _ResumeBackend:
+    def __init__(self) -> None:
+        self.target = Target(
+            id="@9",
+            title="project",
+            cwd="/workspace",
+            provider="antigravity",
+            conversation_id="agy-session",
+            transcript=None,
+            pane_id="%9",
+            pane_title="agy",
+            rows=24,
+            cols=80,
+            process_id=99,
+            approval_mode="normal",
+            status=Status("idle", "", "screen", utc_now()),
+            host="test-host",
+            resume_provider="antigravity",
+            foreground_argv=("agy",),
+        )
+        self.created: tuple[dict, CreationOptions] | None = None
+
+    async def targets(self) -> list[Target]:
+        return [self.target]
+
+    async def inspect(self, target_id: str) -> Target:
+        assert target_id == self.target.id
+        return self.target
+
+    async def prompt(self, target: Target) -> Prompt | None:
+        return None
+
+    async def terminal(self, target: Target, pane: str) -> dict[str, Any]:
+        raise AssertionError("terminal is unused in this test")
+
+    async def send_text(
+        self, target: Target, text: str, *, enter: bool, raw: bool | None = None
+    ) -> bool:
+        raise AssertionError("send_text is unused in this test")
+
+    async def send_key(self, target: Target, key: str) -> bool:
+        raise AssertionError("send_key is unused in this test")
+
+    async def send_followup(self, target: Target, text: str) -> bool:
+        raise AssertionError("send_followup is unused in this test")
+
+    async def select_pane(self, target: Target, pane_id: str) -> Target:
+        raise AssertionError("select_pane is unused in this test")
+
+    async def split(self, target: Target) -> str | None:
+        raise AssertionError("split is unused in this test")
+
+    async def close(self, target: Target) -> bool:
+        raise AssertionError("close is unused in this test")
+
+    async def rename(self, target: Target, title: str) -> bool:
+        raise AssertionError("rename is unused in this test")
+
+    async def commands(self, target: Target) -> list[dict[str, str]]:
+        raise AssertionError("commands are unused in this test")
+
+    async def create(
+        self,
+        data: dict[str, Any],
+        *,
+        trusted_options: CreationOptions | None = None,
+    ) -> Target:
+        if trusted_options is None:
+            raise AssertionError("creation options are required in this test")
+        self.created = data, trusted_options
+        if trusted_options.resume_id == "invalid/session":
+            raise ProtocolError(400, "invalid_request", "Invalid Antigravity session")
+        return replace(
+            self.target,
+            cwd=data["directory"],
+            provider=data["provider"],
+            conversation_id=trusted_options.resume_id or "agy-session",
+            approval_mode=trusted_options.approval_mode,
+        )
+
+    async def resume(self, target: Target, conversation_id: str) -> bool:
+        raise AssertionError("resume is unused in this test")
+
+
+def _real_session_context(tmp_path: Path, backend: _ResumeBackend):
+    store = ProtocolStore(tmp_path / "session-protocol.sqlite3")
+    service = LocalSessionService(backend, store)
+    context = MagicMock()
+    context.bot_data = {"session_service": service}
+    return store, service, context
 
 
 class TestAntigravityWorkspaceDiscovery:
@@ -146,68 +245,108 @@ class TestProviderScopedResumeLaunch:
     ) -> None:
         provider = MagicMock()
         provider.capabilities.name = "antigravity"
-        provider.capabilities.supports_hook = False
-        provider.make_launch_args.return_value = "--conversation agy-session"
+        provider.capabilities.supports_hook = True
         monkeypatch.setattr(
             resume_command, "get_provider_for_window", MagicMock(return_value=provider)
         )
-        monkeypatch.setattr(
-            resume_command, "resolve_launch_command", MagicMock(return_value="agy")
+        backend = _ResumeBackend()
+        store, service, context = _real_session_context(tmp_path, backend)
+        router = MagicMock()
+        router.get_window_for_thread.return_value = None
+        router.resolve_chat_id.return_value = -100999
+        router.begin_topic_provisioning.return_value = SimpleNamespace(
+            claim_id="claim-1"
         )
-        tmux_manager = MagicMock()
-        tmux_manager.create_window = AsyncMock(
-            return_value=(True, "created", "project", "@9")
-        )
-        monkeypatch.setattr(resume_command, "tmux_manager", tmux_manager)
+        router.commit_topic_provisioning.return_value = True
+        session_state = MagicMock()
+        sync = MagicMock()
+        sync.wait_for_session_map_entry = AsyncMock(return_value=True)
+        monkeypatch.setattr(resume_command, "thread_router", router)
+        monkeypatch.setattr(resume_command, "session_manager", session_state)
+        monkeypatch.setattr(resume_command, "session_map_sync", sync)
+        monkeypatch.setattr(resume_command.window_query, "view_window", MagicMock())
         monkeypatch.setattr(
-            resume_command.thread_router,
-            "get_window_for_thread",
-            MagicMock(return_value=None),
+            resume_command.window_query,
+            "resolve_window_alias",
+            lambda window_id: window_id,
         )
 
-        result = await resume_command._create_resume_window(
-            1,
-            2,
-            "agy-session",
-            str(tmp_path),
-            provider_name="antigravity",
-        )
+        try:
+            result = await resume_command._create_resume_window(
+                1,
+                2,
+                "agy-session",
+                str(tmp_path),
+                provider_name="antigravity",
+                context=context,
+            )
 
-        assert result[0] is True
-        provider.make_launch_args.assert_called_once_with(resume_id="agy-session")
-        tmux_manager.create_window.assert_awaited_once_with(
-            str(tmp_path),
-            agent_args="--conversation agy-session",
-            launch_command="agy",
-        )
+            assert result == (True, "Resumed session 'project'", "project", "@9")
+            assert backend.created == (
+                {"provider": "antigravity", "directory": str(tmp_path)},
+                CreationOptions("normal", "agy-session", False),
+            )
+            assert sync.wait_for_session_map_entry.await_args.args[0] == "@9"
+            router.attach_provisioning_target.assert_any_call("claim-1", "@9")
+            router.commit_topic_provisioning.assert_called_once_with(
+                "claim-1", window_name="project"
+            )
+            session_state.set_window_origin.assert_called_once_with(
+                "@9", resume_command.CCGRAM_CREATED_WINDOW_ORIGIN
+            )
+            snapshots = await service.list_sessions()
+            assert len(snapshots) == 1
+            assert snapshots[0].id.startswith("s_")
+            assert result[3] == "@9"
+        finally:
+            store.close()
 
     async def test_invalid_session_does_not_unbind_old_window(
         self, tmp_path, monkeypatch
     ) -> None:
         provider = MagicMock()
-        provider.make_launch_args.side_effect = ValueError("invalid session")
-        thread_router = MagicMock()
-        thread_router.get_window_for_thread.return_value = "@3"
+        provider.capabilities.name = "antigravity"
+        provider.capabilities.supports_hook = True
+        backend = _ResumeBackend()
+        store, _service, context = _real_session_context(tmp_path, backend)
+        thread_router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: True,
+        )
+        thread_router.bind_thread(1, 2, "@3", chat_id=-100999)
         monkeypatch.setattr(resume_command, "thread_router", thread_router)
+        monkeypatch.setattr(resume_command, "session_manager", MagicMock())
         monkeypatch.setattr(
             resume_command.window_query,
             "view_window",
             MagicMock(return_value=SimpleNamespace(approval_mode="normal")),
         )
+        monkeypatch.setattr(resume_command, "tmux_manager", MagicMock())
         monkeypatch.setattr(
             resume_command, "get_provider_for_window", MagicMock(return_value=provider)
         )
 
-        with pytest.raises(ValueError, match="invalid session"):
-            await resume_command._create_resume_window(
+        try:
+            result = await resume_command._create_resume_window(
                 1,
                 2,
                 "invalid/session",
                 str(tmp_path),
                 provider_name="antigravity",
+                chat_id=-100999,
+                context=context,
             )
 
-        thread_router.unbind_thread.assert_not_called()
+            assert result == (False, "Invalid Antigravity session", "", "")
+            creation = backend.created
+            assert creation is not None
+            assert creation[1].resume_id == "invalid/session"
+            assert thread_router.get_window_for_thread(1, 2, -100999) == "@3"
+            assert thread_router.iter_topic_provisionings() == []
+            resume_command.tmux_manager.create_window.assert_not_called()
+            resume_command.tmux_manager.close_window.assert_not_called()
+        finally:
+            store.close()
 
 
 class TestAntigravityExecutableQuoting:

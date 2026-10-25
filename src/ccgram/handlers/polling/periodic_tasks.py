@@ -16,6 +16,7 @@ import structlog
 from ...config import config
 from ...telegram_client import TelegramClient
 from ...utils import log_throttle_sweep
+from ...session_protocol.telegram import TelegramSessionAdapter
 from ..live.live_view import tick_live_views
 from .delivery_watch import check_delivery_wedges
 from ..topics.topic_deletion import cleanup_retired_topics
@@ -43,6 +44,7 @@ async def run_periodic_tasks(
     client: TelegramClient,
     all_windows: list["TmuxWindow"],
     timers: dict[str, float],
+    adapter: TelegramSessionAdapter,
 ) -> None:
     """Run time-gated periodic tasks (topic check, live view)."""
     now = time.monotonic()
@@ -53,10 +55,10 @@ async def run_periodic_tasks(
 
     if now - timers["topic_check"] >= TOPIC_CHECK_INTERVAL:
         timers["topic_check"] = now
-        recovery = await recover_topic_provisioning(client)
+        recovery = await recover_topic_provisioning(client, adapter=adapter)
         await prune_stale_state(all_windows)
         if not recovery.get("rate_limited"):
-            await probe_topic_existence(client)
+            await probe_topic_existence(client, adapter)
             # The drain retries failed deletions from ANY retire path
             # (explicit unbind --delete, failed provisioning, system
             # replacement), not only dead-session retention. With the
@@ -77,7 +79,9 @@ async def run_periodic_tasks(
 
 
 async def run_lifecycle_tasks(
-    _client: TelegramClient, all_windows: list["TmuxWindow"]
+    _client: TelegramClient,
+    all_windows: list["TmuxWindow"],
+    adapter: TelegramSessionAdapter,
 ) -> None:
     """Run per-tick unbound window TTL management."""
-    await check_unbound_window_ttl(all_windows)
+    await check_unbound_window_ttl(all_windows, adapter=adapter)

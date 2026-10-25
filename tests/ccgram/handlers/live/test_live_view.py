@@ -534,6 +534,8 @@ class TestHandleKeysLiveGuard:
         update = MagicMock()
         update.callback_query = query
         update.message = None
+        adapter = MagicMock()
+        adapter.send_keys = AsyncMock(return_value=(True, "Sent"))
 
         with (
             patch(
@@ -545,18 +547,11 @@ class TestHandleKeysLiveGuard:
                 return_value=42,
             ),
             patch(
-                "ccgram.handlers.status.status_bar_actions.tmux_manager"
-            ) as mock_tmux,
-            patch(
                 "ccgram.handlers.status.status_bar_actions.text_to_image",
                 new_callable=AsyncMock,
             ) as mock_img,
         ):
-            mock_tmux.find_window_by_id = AsyncMock(
-                return_value=MagicMock(window_id="@0")
-            )
-            mock_tmux.send_keys = AsyncMock()
-            await _handle_keys(query, 1, f"{CB_KEYS_PREFIX}ent:@0", update)
+            await _handle_keys(query, 1, f"{CB_KEYS_PREFIX}ent:@0", update, adapter)
         mock_img.assert_not_awaited()
 
     async def test_refreshes_when_no_live_view(self):
@@ -568,6 +563,8 @@ class TestHandleKeysLiveGuard:
         update = MagicMock()
         update.callback_query = query
         update.message = None
+        adapter = MagicMock()
+        adapter.send_keys = AsyncMock(return_value=(True, "Sent"))
 
         with (
             patch(
@@ -588,12 +585,8 @@ class TestHandleKeysLiveGuard:
             ) as mock_img,
             patch("ccgram.handlers.status.status_bar_actions._KEY_REFRESH_DELAY", 0),
         ):
-            mock_tmux.find_window_by_id = AsyncMock(
-                return_value=MagicMock(window_id="@0")
-            )
             mock_tmux.capture_pane = AsyncMock(return_value="terminal text")
-            mock_tmux.send_keys = AsyncMock()
-            await _handle_keys(query, 1, f"{CB_KEYS_PREFIX}ent:@0", update)
+            await _handle_keys(query, 1, f"{CB_KEYS_PREFIX}ent:@0", update, adapter)
             import asyncio
 
             await asyncio.sleep(0.05)

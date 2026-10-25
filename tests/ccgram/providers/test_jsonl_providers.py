@@ -6,12 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from ccgram.providers._jsonl import extract_content_blocks, parse_jsonl_line
-from ccgram.expandable_quote import EXPANDABLE_QUOTE_START
 from ccgram.providers.codex import (
     CodexProvider,
-    _format_codex_tool_result,
-    _resolve_pending,
 )
 from ccgram.providers.gemini import (
     GeminiProvider,
@@ -19,37 +15,7 @@ from ccgram.providers.gemini import (
     _clean_box_lines,
     _extract_active_box,
 )
-
-
-class TestResolvePending:
-    @pytest.mark.parametrize(
-        "pending_value, expected",
-        [
-            pytest.param(("shell", "shell"), ("shell", "shell"), id="tuple"),
-            pytest.param("shell", ("shell", "shell"), id="legacy_string"),
-        ],
-    )
-    def test_known_formats(
-        self,
-        pending_value: object,
-        expected: tuple[str | None, str | None],
-    ) -> None:
-        pending: dict[str, object] = {"fc1": pending_value}
-        assert _resolve_pending("fc1", pending) == expected
-        assert "fc1" not in pending
-
-    def test_missing_key_returns_nones(self) -> None:
-        pending: dict[str, object] = {}
-        assert _resolve_pending("missing", pending) == (None, None)
-
-    def test_empty_call_id_returns_nones(self) -> None:
-        pending: dict[str, object] = {"": ("a", "b")}
-        assert _resolve_pending("", pending) == (None, None)
-        assert "" in pending
-
-    def test_non_string_call_id_returns_nones(self) -> None:
-        pending: dict[str, object] = {}
-        assert _resolve_pending(42, pending) == (None, None)
+from ccgram.session_protocol.messages import SourceEntry, build_messages
 
 
 HOOK_AWARE_JSONL_PROVIDERS = [CodexProvider, GeminiProvider]
@@ -111,692 +77,88 @@ class TestGeminiLaunchArgs:
         assert result == "--resume latest"
 
 
-class TestCodexTranscriptParsing:
-    def test_parses_assistant_response_item(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "hello"}],
-                },
-            }
-        ]
-        messages, _ = codex.parse_transcript_entries(entries, {})
-        assert len(messages) == 1
-        assert messages[0].text == "hello"
-        assert messages[0].role == "assistant"
+class TestCanonicalCodexTranscript:
+    @staticmethod
+    def _messages(entries: list[dict]):
+        return build_messages(
+            [SourceEntry(offset, entry) for offset, entry in enumerate(entries)],
+            "codex-test",
+            "codex",
+        )
 
-    def test_parses_final_answer_phase_from_response_item(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "role": "assistant",
-                    "phase": "final_answer",
-                    "content": [{"type": "output_text", "text": "done"}],
+    def test_normalizes_response_phase_and_user_input(self) -> None:
+        messages = self._messages(
+            [
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "phase": "final_answer",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    },
                 },
-            }
-        ]
-        messages, _ = codex.parse_transcript_entries(entries, {})
+                {
+                    "type": "input_item",
+                    "payload": {"role": "user", "content": "question"},
+                },
+            ]
+        )
+        assert [message.role for message in messages] == ["agent", "user"]
+        assert [part.text for part in messages[0].parts] == ["done"]
+        assert messages[0].phase == "final_answer"
+        assert messages[1].parts[0].text == "question"
+
+    def test_agent_stream_and_completion_share_one_message(self) -> None:
+        messages = self._messages(
+            [
+                {
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "working"},
+                },
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_complete",
+                        "last_agent_message": "working and done",
+                    },
+                },
+            ]
+        )
         assert len(messages) == 1
+        assert messages[0].parts[0].text == "working and done"
+        assert messages[0].complete is True
         assert messages[0].phase == "final_answer"
 
-    def test_parses_user_input_item(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "input_item",
-                "payload": {"role": "user", "content": "what is this?"},
-            }
-        ]
-        messages, _ = codex.parse_transcript_entries(entries, {})
-        assert len(messages) == 1
-        assert messages[0].text == "what is this?"
-        assert messages[0].role == "user"
-
-    def test_parses_event_agent_message(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "event_msg",
-                "payload": {
-                    "type": "agent_message",
-                    "message": "working on it",
+    def test_tool_result_completes_normalized_call(self) -> None:
+        messages = self._messages(
+            [
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call",
+                        "call_id": "c1",
+                        "name": "exec_command",
+                        "arguments": '{"cmd":"ls"}',
+                    },
                 },
-            }
-        ]
-        messages, _ = codex.parse_transcript_entries(entries, {})
-        assert len(messages) == 1
-        assert messages[0].text == "working on it"
-        assert messages[0].role == "assistant"
-        assert messages[0].content_type == "text"
-        assert messages[0].is_complete is False
-
-    def test_agent_message_stream_is_completed_by_task_complete(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "event_msg",
-                "payload": {"type": "agent_message", "message": "working"},
-            },
-            {
-                "type": "event_msg",
-                "payload": {
-                    "type": "task_complete",
-                    "last_agent_message": "working and done",
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call_output",
+                        "call_id": "c1",
+                        "output": "ok",
+                    },
                 },
-            },
-        ]
-
-        messages, _ = codex.parse_transcript_entries(entries, {})
-
-        assert [message.text for message in messages] == ["working", "working and done"]
-        assert [message.is_complete for message in messages] == [False, True]
-
-    def test_dedupes_identical_event_and_response_messages(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "event_msg",
-                "payload": {
-                    "type": "agent_message",
-                    "message": "same text",
-                },
-            },
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "same text"}],
-                },
-            },
-        ]
-        messages, _ = codex.parse_transcript_entries(entries, {})
-        assert len(messages) == 1
-        assert messages[0].text == "same text"
-
-    def test_dedupes_event_and_prefers_final_answer_metadata(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "event_msg",
-                "payload": {
-                    "type": "agent_message",
-                    "message": "same text",
-                },
-            },
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "role": "assistant",
-                    "phase": "final_answer",
-                    "content": [{"type": "output_text", "text": "same text"}],
-                },
-            },
-        ]
-        messages, _ = codex.parse_transcript_entries(entries, {})
-        assert len(messages) == 1
-        assert messages[0].text == "same text"
-        assert messages[0].phase == "final_answer"
-
-    def test_parses_task_complete_as_final_answer_fallback(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "event_msg",
-                "payload": {
-                    "type": "task_complete",
-                    "last_agent_message": "finished",
-                },
-            }
-        ]
-        messages, _ = codex.parse_transcript_entries(entries, {})
-        assert len(messages) == 1
-        assert messages[0].text == "finished"
-        assert messages[0].phase == "final_answer"
-
-    def test_tracks_function_call_pending(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "function_call",
-                    "name": "exec_command",
-                    "call_id": "fc1",
-                    "arguments": '{"cmd":"ls"}',
-                },
-            }
-        ]
-        messages, pending = codex.parse_transcript_entries(entries, {})
-        assert len(messages) == 1
-        assert messages[0].content_type == "tool_use"
-        assert messages[0].tool_use_id == "fc1"
-        assert messages[0].tool_name == "exec_command"
-        assert pending["fc1"] == ("exec_command", "exec_command")
-
-    def test_function_call_output_clears_pending(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "function_call_output",
-                    "call_id": "fc1",
-                    "output": "Chunk ID: abc\nOutput:\nok\n",
-                },
-            }
-        ]
-        messages, pending = codex.parse_transcript_entries(
-            entries, {"fc1": ("exec_command", "exec_command")}
+            ]
         )
         assert len(messages) == 1
-        assert messages[0].content_type == "tool_result"
-        assert messages[0].tool_use_id == "fc1"
-        assert "1 lines" in messages[0].text
-        assert "fc1" not in pending
-
-    def test_function_call_output_legacy_string_pending(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "function_call_output",
-                    "call_id": "fc1",
-                    "output": "result text",
-                },
-            }
-        ]
-        messages, pending = codex.parse_transcript_entries(
-            entries, {"fc1": "some_tool"}
-        )
-        assert len(messages) == 1
-        assert messages[0].content_type == "tool_result"
-        assert "fc1" not in pending
-
-    def test_request_user_input_maps_to_ask_user_question(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "function_call",
-                    "name": "request_user_input",
-                    "call_id": "q1",
-                    "arguments": (
-                        '{"questions":[{"question":"Pick one?",'
-                        '"options":[{"label":"A"},{"label":"B"}]}]}'
-                    ),
-                },
-            },
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "function_call_output",
-                    "call_id": "q1",
-                    "output": '{"answers":{"q":{"answers":["A"]}}}',
-                },
-            },
-        ]
-        messages, pending = codex.parse_transcript_entries(entries, {})
-        assert pending == {}
-        assert len(messages) == 2
-        assert messages[0].content_type == "tool_use"
-        assert messages[0].tool_name == "AskUserQuestion"
-        assert "Pick one?" in messages[0].text
-        assert messages[1].content_type == "tool_result"
-        assert messages[1].text == "Selected: A"
-
-    def test_skips_developer_role(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "role": "developer",
-                    "content": [{"type": "input_text", "text": "system prompt"}],
-                },
-            }
-        ]
-        messages, _ = codex.parse_transcript_entries(entries, {})
-        assert messages == []
-
-    def test_is_user_entry_detects_input_item(self) -> None:
-        codex = CodexProvider()
-        assert codex.is_user_transcript_entry(
-            {"type": "input_item", "payload": {"role": "user"}}
-        )
-
-    def test_is_user_entry_skips_system_preamble(self) -> None:
-        codex = CodexProvider()
-        entry = {
-            "type": "response_item",
-            "payload": {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": "<permissions>...</permissions>"}
-                ],
-            },
-        }
-        assert codex.is_user_transcript_entry(entry) is False
-
-
-class TestFormatCodexToolResult:
-    @pytest.mark.parametrize(
-        "tool_name, text, expect_quote",
-        [
-            pytest.param(
-                "shell", "line1\nline2\nline3", True, id="shell_always_quoted"
-            ),
-            pytest.param(
-                "exec_command", "a\nb\nc\nd\ne", True, id="exec_command_always_quoted"
-            ),
-            pytest.param("read_file", "short", False, id="short_inline"),
-            pytest.param("read_file", "a\nb\nc", False, id="3_lines_at_threshold"),
-            pytest.param("read_file", "a\nb\nc\nd", True, id="4_lines_above_threshold"),
-        ],
-    )
-    def test_quote_threshold(
-        self, tool_name: str, text: str, expect_quote: bool
-    ) -> None:
-        result = _format_codex_tool_result(tool_name, text)
-        if expect_quote:
-            assert EXPANDABLE_QUOTE_START in result
-            line_count = text.count("\n") + 1
-            assert f"{line_count} lines" in result
-        else:
-            assert EXPANDABLE_QUOTE_START not in result
-
-    def test_long_non_shell_gets_stats_and_quote(self) -> None:
-        text = "\n".join(f"line {i}" for i in range(10))
-        result = _format_codex_tool_result("read_file", text)
-        assert "10 lines" in result
-        assert EXPANDABLE_QUOTE_START in result
-
-    @pytest.mark.parametrize(
-        "output_json, expected",
-        [
-            pytest.param(
-                '{"output": "Patch applied successfully"}',
-                "Patch applied successfully",
-                id="output_key",
-            ),
-            pytest.param(
-                '{"result": "Changes applied"}',
-                "Changes applied",
-                id="result_key",
-            ),
-            pytest.param("not json at all", "not json at all", id="non_json_raw"),
-            pytest.param('{"status": "ok"}', '{"status": "ok"}', id="no_output_key"),
-        ],
-    )
-    def test_apply_patch_extraction(self, output_json: str, expected: str) -> None:
-        assert _format_codex_tool_result("apply_patch", output_json) == expected
-
-    def test_empty_output_returns_done(self) -> None:
-        assert _format_codex_tool_result("shell", "") == "Done"
-
-
-class TestCodexCustomToolCall:
-    def test_apply_patch_counts_update_files(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call",
-                    "name": "apply_patch",
-                    "call_id": "ct1",
-                    "input": (
-                        "*** Update File: src/foo.py\n"
-                        "--- before\n+++ after\n"
-                        "*** Update File: src/bar.py\n"
-                        "--- before\n+++ after\n"
-                    ),
-                },
-            }
-        ]
-        messages, pending = codex.parse_transcript_entries(entries, {})
-        assert len(messages) == 1
-        assert messages[0].content_type == "tool_use"
-        assert messages[0].tool_name == "Edit"
-        assert "2 file(s)" in messages[0].text
-        assert "ct1" in pending
-
-    def test_apply_patch_counts_add_and_delete_files(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call",
-                    "name": "apply_patch",
-                    "call_id": "ct1",
-                    "input": (
-                        "*** Add File: src/new.py\ncontent\n"
-                        "*** Delete File: src/old.py\n"
-                        "*** Update File: src/mod.py\n--- a\n+++ b\n"
-                    ),
-                },
-            }
-        ]
-        messages, _ = codex.parse_transcript_entries(entries, {})
-        assert "3 file(s)" in messages[0].text
-
-    def test_non_apply_patch_uses_input_as_summary(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call",
-                    "name": "some_other_tool",
-                    "call_id": "ct1",
-                    "input": "do something",
-                },
-            }
-        ]
-        messages, pending = codex.parse_transcript_entries(entries, {})
-        assert messages[0].tool_name == "some_other_tool"
-        assert "do something" in messages[0].text
-        assert pending["ct1"] == ("some_other_tool", "some_other_tool")
-
-    def test_empty_call_id_not_stored_in_pending(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call",
-                    "name": "apply_patch",
-                    "call_id": "",
-                    "input": "*** Update File: f.py\n",
-                },
-            }
-        ]
-        messages, pending = codex.parse_transcript_entries(entries, {})
-        assert len(messages) == 1
-        assert pending == {}
-        assert messages[0].tool_use_id is None
-
-    def test_long_input_truncated_in_summary(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call",
-                    "name": "unknown_tool",
-                    "call_id": "ct1",
-                    "input": "x" * 300,
-                },
-            }
-        ]
-        messages, _ = codex.parse_transcript_entries(entries, {})
-        assert "…" in messages[0].text
-        assert len(messages[0].text) < 300
-
-
-class TestCustomToolCallOutput:
-    def test_apply_patch_output_extracted(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call_output",
-                    "call_id": "ct1",
-                    "output": '{"output": "Applied successfully"}',
-                },
-            }
-        ]
-        messages, pending = codex.parse_transcript_entries(
-            entries, {"ct1": ("apply_patch", "Edit")}
-        )
-        assert messages[0].content_type == "tool_result"
-        assert messages[0].text == "Applied successfully"
-        assert "ct1" not in pending
-
-    def test_shell_output_gets_quote(self) -> None:
-        codex = CodexProvider()
-        long_output = "\n".join(f"line {i}" for i in range(20))
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call_output",
-                    "call_id": "ct2",
-                    "output": long_output,
-                },
-            }
-        ]
-        messages, _ = codex.parse_transcript_entries(
-            entries, {"ct2": ("shell", "shell")}
-        )
-        assert EXPANDABLE_QUOTE_START in messages[0].text
-
-    def test_dict_output_with_output_key(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call_output",
-                    "call_id": "ct1",
-                    "output": {"output": "dict result"},
-                },
-            }
-        ]
-        messages, _ = codex.parse_transcript_entries(
-            entries, {"ct1": ("apply_patch", "Edit")}
-        )
-        assert messages[0].text == "dict result"
-
-    def test_no_pending_match_returns_raw_output(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call_output",
-                    "call_id": "unknown",
-                    "output": "some output",
-                },
-            }
-        ]
-        messages, _ = codex.parse_transcript_entries(entries, {})
-        assert messages[0].text == "some output"
-        assert messages[0].tool_name is None
-
-    def test_empty_output_returns_done(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call_output",
-                    "call_id": "ct1",
-                    "output": "",
-                },
-            }
-        ]
-        messages, _ = codex.parse_transcript_entries(
-            entries, {"ct1": ("apply_patch", "Edit")}
-        )
-        assert messages[0].text == "Done"
-
-    def test_legacy_string_pending_compat(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call_output",
-                    "call_id": "ct1",
-                    "output": "result",
-                },
-            }
-        ]
-        messages, _ = codex.parse_transcript_entries(entries, {"ct1": "shell"})
-        assert messages[0].tool_name == "shell"
-
-
-class TestCodexToolCallIntegration:
-    def test_function_call_then_output_shell_formatted(self) -> None:
-
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "function_call",
-                    "name": "shell",
-                    "call_id": "fc1",
-                    "arguments": '{"cmd": "ls -la"}',
-                },
-            },
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "function_call_output",
-                    "call_id": "fc1",
-                    "output": "total 42\ndrwxr-xr-x  5 user group  160 Jan  1 00:00 .\ndrwxr-xr-x 10 user group  320 Jan  1 00:00 ..",
-                },
-            },
-        ]
-        messages, pending = codex.parse_transcript_entries(entries, {})
-        assert len(messages) == 2
-        assert messages[0].content_type == "tool_use"
-        assert messages[0].tool_name == "shell"
-        assert messages[1].content_type == "tool_result"
-        assert "3 lines" in messages[1].text
-        assert EXPANDABLE_QUOTE_START in messages[1].text
-        assert pending == {}
-
-    def test_custom_tool_call_then_output_roundtrip(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call",
-                    "name": "apply_patch",
-                    "call_id": "ct1",
-                    "input": "*** Update File: src/main.py\n--- a\n+++ b\n",
-                },
-            },
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call_output",
-                    "call_id": "ct1",
-                    "output": '{"output": "Patch applied"}',
-                },
-            },
-        ]
-        messages, pending = codex.parse_transcript_entries(entries, {})
-        assert len(messages) == 2
-        assert messages[0].content_type == "tool_use"
-        assert messages[0].tool_name == "Edit"
-        assert "1 file(s)" in messages[0].text
-        assert messages[1].content_type == "tool_result"
-        assert messages[1].text == "Patch applied"
-        assert messages[1].tool_name == "Edit"
-        assert pending == {}
-
-    def test_mixed_text_custom_and_function_calls(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "Let me fix that."}],
-                },
-            },
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call",
-                    "name": "apply_patch",
-                    "call_id": "ct1",
-                    "input": "*** Update File: f.py\n",
-                },
-            },
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "custom_tool_call_output",
-                    "call_id": "ct1",
-                    "output": '{"output": "Done"}',
-                },
-            },
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "function_call",
-                    "name": "exec_command",
-                    "call_id": "fc1",
-                    "arguments": '{"cmd": "make test"}',
-                },
-            },
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "function_call_output",
-                    "call_id": "fc1",
-                    "output": "tests passed",
-                },
-            },
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "All done!"}],
-                },
-            },
-        ]
-        messages, pending = codex.parse_transcript_entries(entries, {})
-        assert len(messages) == 6
-        types = [m.content_type for m in messages]
-        assert types == [
-            "text",
-            "tool_use",
-            "tool_result",
-            "tool_use",
-            "tool_result",
-            "text",
-        ]
-        assert messages[0].text == "Let me fix that."
-        assert messages[5].text == "All done!"
-        assert pending == {}
-
-    def test_function_call_output_without_pending_no_formatting(self) -> None:
-        codex = CodexProvider()
-        entries = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "function_call_output",
-                    "call_id": "orphan",
-                    "output": "some text",
-                },
-            }
-        ]
-        messages, _ = codex.parse_transcript_entries(entries, {})
-        assert len(messages) == 1
-        assert messages[0].text == "some text"
-        assert messages[0].tool_name is None
+        tool = messages[0].parts[0]
+        assert tool.type == "tool"
+        assert tool.tool_call_id == "c1"
+        assert tool.name == "exec_command"
+        assert tool.status == "completed"
+        assert tool.output == {"text": "ok", "truncated": False}
 
 
 class TestCodexTerminalStatus:
@@ -853,148 +215,52 @@ class TestCodexTerminalStatus:
         assert status is None
 
 
-class TestGeminiTranscriptParsing:
-    def test_parses_gemini_message(self) -> None:
-        gemini = GeminiProvider()
-        entries = [{"type": "gemini", "content": "here is my answer"}]
-        messages, _ = gemini.parse_transcript_entries(entries, {})
+class TestCanonicalGeminiTranscript:
+    @staticmethod
+    def _messages(entries: list[dict]):
+        return build_messages(
+            [SourceEntry(offset, entry) for offset, entry in enumerate(entries)],
+            "gemini-test",
+            "gemini",
+        )
+
+    def test_normalizes_user_assistant_and_notice_records(self) -> None:
+        messages = self._messages(
+            [
+                {"type": "user", "content": [{"text": "hello"}]},
+                {"type": "gemini", "content": "answer"},
+                {"type": "error", "content": "failed"},
+            ]
+        )
+        assert [message.role for message in messages] == ["user", "agent", "agent"]
+        assert messages[0].parts[0].text == "hello"
+        assert messages[1].parts[0].text == "answer"
+        assert messages[2].parts[0].type == "notice"
+        assert messages[2].parts[0].level == "error"
+
+    def test_embedded_tool_result_completes_call(self) -> None:
+        messages = self._messages(
+            [
+                {
+                    "type": "gemini",
+                    "content": "Using tool",
+                    "toolCalls": [
+                        {
+                            "id": "tc1",
+                            "name": "ReadFile",
+                            "args": {"path": "x.py"},
+                            "result": "contents",
+                        }
+                    ],
+                }
+            ]
+        )
         assert len(messages) == 1
-        assert messages[0].text == "here is my answer"
-        assert messages[0].role == "assistant"
-
-    def test_parses_user_message(self) -> None:
-        gemini = GeminiProvider()
-        entries = [{"type": "user", "content": "hello gemini"}]
-        messages, _ = gemini.parse_transcript_entries(entries, {})
-        assert len(messages) == 1
-        assert messages[0].text == "hello gemini"
-        assert messages[0].role == "user"
-
-    def test_parses_user_array_content(self) -> None:
-        gemini = GeminiProvider()
-        entries = [
-            {
-                "type": "user",
-                "content": [{"text": "hello "}, {"text": "from array"}],
-            }
-        ]
-        messages, _ = gemini.parse_transcript_entries(entries, {})
-        assert len(messages) == 1
-        assert messages[0].text == "hello from array"
-        assert messages[0].role == "user"
-
-    def test_falls_back_to_display_content(self) -> None:
-        gemini = GeminiProvider()
-        entry = {
-            "type": "user",
-            "content": [{"meta": "ignored"}],
-            "displayContent": [{"text": "display text"}],
-        }
-        parsed = gemini.parse_history_entry(entry)
-        assert parsed is not None
-        assert parsed.text == "display text"
-        assert parsed.role == "user"
-
-    def test_tracks_tool_calls(self) -> None:
-        gemini = GeminiProvider()
-        entries = [
-            {
-                "type": "gemini",
-                "content": "using tool",
-                "toolCalls": [{"id": "tc1", "name": "shell"}],
-            }
-        ]
-        messages, pending = gemini.parse_transcript_entries(entries, {})
-        assert "tc1" in pending
-        assert messages[0].content_type == "tool_use"
-
-    def test_emits_tool_result_and_clears_pending_when_result_present(self) -> None:
-        gemini = GeminiProvider()
-        entries = [
-            {
-                "type": "gemini",
-                "content": "",
-                "toolCalls": [
-                    {
-                        "id": "tc1",
-                        "name": "read_file",
-                        "displayName": "ReadFile",
-                        "args": {"file_path": "/tmp/x"},
-                        "resultDisplay": "ok",
-                    }
-                ],
-            }
-        ]
-        messages, pending = gemini.parse_transcript_entries(entries, {})
-        assert len(messages) == 2
-        assert messages[0].content_type == "tool_use"
-        assert messages[0].tool_name == "ReadFile"
-        assert messages[1].content_type == "tool_result"
-        assert messages[1].text == "ok"
-        assert "tc1" not in pending
-
-    def test_parses_info_and_error_entries_as_assistant(self) -> None:
-        gemini = GeminiProvider()
-        entries = [
-            {"type": "info", "content": "Request cancelled."},
-            {"type": "error", "content": "API error"},
-        ]
-        messages, _ = gemini.parse_transcript_entries(entries, {})
-        assert len(messages) == 2
-        assert all(m.role == "assistant" for m in messages)
-        assert messages[0].text == "Request cancelled."
-        assert messages[1].text == "API error"
-
-    def test_skips_unknown_types(self) -> None:
-        gemini = GeminiProvider()
-        entries = [{"type": "system", "content": "some system info"}]
-        messages, _ = gemini.parse_transcript_entries(entries, {})
-        assert messages == []
-
-    def test_is_user_entry(self) -> None:
-        gemini = GeminiProvider()
-        assert gemini.is_user_transcript_entry({"type": "user"}) is True
-        assert gemini.is_user_transcript_entry({"type": "gemini"}) is False
-
-    def test_dedup_repeated_message_id(self) -> None:
-        # Gemini's JSONL transcript re-appends the same message line on every
-        # toolCalls update. The parser must dedup by id across calls.
-        gemini = GeminiProvider()
-        first = [
-            {
-                "id": "msg-1",
-                "type": "gemini",
-                "content": "checking the file",
-                "toolCalls": [
-                    {"id": "tc-1", "name": "read_file", "args": {"path": "x"}}
-                ],
-            }
-        ]
-        msgs1, pending = gemini.parse_transcript_entries(first, {})
-        # First emission: text once + tool_use once, no result yet.
-        assert [m.content_type for m in msgs1] == ["tool_use", "text"]
-        assert "tc-1" in pending
-
-        # Same message id re-appended with the result attached.
-        second = [
-            {
-                "id": "msg-1",
-                "type": "gemini",
-                "content": "checking the file",
-                "toolCalls": [
-                    {
-                        "id": "tc-1",
-                        "name": "read_file",
-                        "args": {"path": "x"},
-                        "resultDisplay": "ok",
-                    }
-                ],
-            }
-        ]
-        msgs2, pending = gemini.parse_transcript_entries(second, pending)
-        # Second emission: only tool_result. No duplicate text or tool_use.
-        assert [m.content_type for m in msgs2] == ["tool_result"]
-        assert "tc-1" not in pending
+        tool = next(part for part in messages[0].parts if part.type == "tool")
+        assert tool.tool_call_id == "tc1"
+        assert tool.name == "ReadFile"
+        assert tool.status == "completed"
+        assert tool.output == {"text": "contents", "truncated": False}
 
 
 class TestGeminiTerminalStatus:
@@ -1370,56 +636,6 @@ class TestGeminiCommandDiscovery:
         discovered = next(cmd for cmd in commands if cmd.name == "code:fix")
         assert discovered.description == "Fix all issues"
         assert discovered.source == "command"
-
-
-class TestParseJsonlLine:
-    def test_json_array_returns_none(self) -> None:
-        assert parse_jsonl_line("[1, 2, 3]") is None
-
-    def test_json_string_returns_none(self) -> None:
-        assert parse_jsonl_line('"just a string"') is None
-
-    def test_json_number_returns_none(self) -> None:
-        assert parse_jsonl_line("42") is None
-
-
-class TestExtractContentBlocks:
-    def test_string_content(self) -> None:
-        text, ct, pending = extract_content_blocks("hello world", {})
-        assert text == "hello world"
-        assert ct == "text"
-
-    def test_non_list_non_string_returns_empty(self) -> None:
-        text, ct, pending = extract_content_blocks(42, {})
-        assert text == ""
-        assert ct == "text"
-
-    def test_none_content_returns_empty(self) -> None:
-        text, ct, pending = extract_content_blocks(None, {})
-        assert text == ""
-        assert ct == "text"
-
-    def test_non_dict_blocks_skipped(self) -> None:
-        text, ct, pending = extract_content_blocks(["not a dict", 42], {})
-        assert text == ""
-
-    def test_tool_use_tracked_in_pending(self) -> None:
-        blocks = [{"type": "tool_use", "id": "t1", "name": "Read"}]
-        _, ct, pending = extract_content_blocks(blocks, {})
-        assert ct == "tool_use"
-        assert pending == {"t1": "Read"}
-
-    def test_tool_result_clears_pending(self) -> None:
-        blocks = [{"type": "tool_result", "tool_use_id": "t1"}]
-        _, ct, pending = extract_content_blocks(blocks, {"t1": "Read"})
-        assert ct == "tool_result"
-        assert "t1" not in pending
-
-    def test_tool_result_without_id_does_not_pop_empty(self) -> None:
-        blocks = [{"type": "tool_result"}]
-        pending = {"t1": "Read"}
-        _, _, result = extract_content_blocks(blocks, pending)
-        assert result == {"t1": "Read"}
 
 
 def _write_gemini_session(
@@ -1886,8 +1102,3 @@ class TestGeminiCapabilityFlag:
     def test_codex_supports_incremental_read(self) -> None:
         codex = CodexProvider()
         assert codex.capabilities.supports_incremental_read is True
-
-    def test_codex_read_transcript_file_raises(self) -> None:
-        codex = CodexProvider()
-        with pytest.raises(NotImplementedError):
-            codex.read_transcript_file("/tmp/fake.jsonl", 0)

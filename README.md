@@ -162,6 +162,7 @@ Native Windows does not provide the Unix file locking, signal handling, and term
 
 - **[Guides](docs/guides.md)** — CLI reference, configuration, delivery/backlog safety, `/sync`, voice transcription, multi-instance setup, session recovery, testing
 - **[Providers](docs/providers.md)** — Claude Code, Codex, Gemini, Pi, Shell; transcript delivery, session modes, LLM config, custom commands, git worktrees
+- **[Mobile protocol](docs/protocol/README.md)** — optional authenticated HTTP/WebSocket API, pairing, and client recovery rules
 - **[Architecture](docs/architecture.md)** — delivery queue, transcript watermark, and provider/three-backend multiplexer design
 
 ---

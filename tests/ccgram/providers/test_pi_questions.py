@@ -6,11 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ccgram.handlers.interactive.interactive_ui import (
-    INTERACTIVE_TOOL_NAMES,
     handle_interactive_ui,
     parse_direct_choices,
 )
 from ccgram.providers.pi import PiProvider
+from ccgram.session_protocol.messages import read_entries
+from tests.ccgram.providers.protocol_helpers import protocol_messages
 
 MENU = """────────────────────────────────────────────────────────────────
  Release scope
@@ -35,41 +36,37 @@ CHOICES = (
 
 
 def test_pi_question_tool_activates_existing_interactive_route() -> None:
-    provider = PiProvider()
-    entry = provider.parse_transcript_line(
-        json.dumps(
-            {
-                "type": "message",
-                "message": {
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "toolCall",
-                            "id": "question-1",
-                            "name": "ask_user_question",
-                            "arguments": {
-                                "questions": [
-                                    {
-                                        "question": "Which repositories?",
-                                        "options": [
-                                            {"label": "Both routers"},
-                                            {"label": "pi-model-router only"},
-                                        ],
-                                    }
-                                ]
-                            },
-                        }
-                    ],
-                },
-            }
-        )
-    )
-    assert entry is not None
-    messages, pending = provider.parse_transcript_entries([entry], {})
-    assert messages[0].tool_name == "AskUserQuestion"
-    assert messages[0].tool_name in INTERACTIVE_TOOL_NAMES
-    assert messages[0].content_type == "tool_use"
-    assert "question-1" in pending
+    raw_entry = {
+        "type": "message",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "toolCall",
+                    "id": "question-1",
+                    "name": "ask_user_question",
+                    "arguments": {
+                        "questions": [
+                            {
+                                "question": "Which repositories?",
+                                "options": [
+                                    {"label": "Both routers"},
+                                    {"label": "pi-model-router only"},
+                                ],
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+    }
+    entry = read_entries((json.dumps(raw_entry) + "\n").encode(), "pi")
+    assert len(entry) == 1
+    messages = protocol_messages([entry[0].data], "pi")
+    tool = messages[0].parts[0]
+    assert tool.name == "ask_user_question"
+    assert tool.type == "tool"
+    assert tool.tool_call_id == "question-1"
 
 
 @pytest.mark.parametrize("selected", [1, 2, 3])

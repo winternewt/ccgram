@@ -1,0 +1,19 @@
+{
+  "id": "conv/thought#0",
+  "type": "thinking",
+  "text": "Check the failure first.",
+  "toolCallId": null,
+  "name": null,
+  "kind": null,
+  "status": null,
+  "title": null,
+  "input": null,
+  "output": null,
+  "diff": null,
+  "url": null,
+  "width": null,
+  "height": null,
+  "mime": null,
+  "size": null,
+  "level": null
+}

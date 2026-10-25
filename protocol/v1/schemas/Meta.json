@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ccgram.dev/protocol/v1/schemas/Meta.json",
+  "title": "Meta",
+  "type": "object",
+  "properties": {
+    "protocol": {
+      "enum": [
+        "ccgram/1"
+      ]
+    },
+    "server": {
+      "type": "string"
+    },
+    "minClient": {
+      "type": "string"
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "protocol",
+    "server",
+    "minClient",
+    "capabilities"
+  ],
+  "additionalProperties": true
+}

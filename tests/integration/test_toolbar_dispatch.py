@@ -1,15 +1,18 @@
 """Integration tests for toolbar callback dispatch through the PTB application.
 
 Exercises the full path from a Telegram CallbackQuery → callback_registry
-dispatch → toolbar_callbacks._dispatch → action handler. Mocks tmux_manager
-and session_manager but uses a real PTB Application + real callback_registry
-to verify the single ``CB_TOOLBAR`` prefix wiring and per-type dispatch.
+dispatch → toolbar_callbacks._dispatch → action handler. Uses a real PTB
+Application, callback registry, session service, and adapter. The fake backend
+records terminal input at the protocol boundary.
 """
 
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from telegram import CallbackQuery
@@ -31,15 +34,89 @@ from ccgram.toolbar_config import (
     ToolbarConfig,
     ToolbarLayout,
 )
+from ccgram.session_protocol.backend import CreationOptions, Prompt, Target
+from ccgram.session_protocol.models import Status
+from ccgram.session_protocol.service import LocalSessionService
+from ccgram.session_protocol.store import ProtocolStore
 
 pytestmark = pytest.mark.integration
 
-TEST_USER_ID = 12345
-TEST_THREAD_ID = 42
 TEST_WINDOW_ID = "@5"
 
 _MOD_CB = "ccgram.handlers.toolbar.toolbar_callbacks"
 _MOD_KB = "ccgram.handlers.toolbar.toolbar_keyboard"
+
+
+class _SessionBackend:
+    def __init__(self, target_id: str) -> None:
+        self.target = Target(
+            id=target_id,
+            title="test-win",
+            cwd="/workspace",
+            provider="claude",
+            conversation_id="conversation",
+            transcript=None,
+            pane_id="%5",
+            pane_title="claude",
+            rows=24,
+            cols=80,
+            process_id=123,
+            approval_mode="normal",
+            status=Status("idle", "", "native", "2026-10-20T10:00:00Z"),
+            foreground_argv=("claude",),
+        )
+        self.keys: list[str] = []
+        self.texts: list[tuple[str, bool]] = []
+
+    async def targets(self) -> list[Target]:
+        return [self.target]
+
+    async def inspect(self, target_id: str) -> Target:
+        assert target_id == self.target.id
+        return self.target
+
+    async def prompt(self, target: Target) -> Prompt | None:
+        return None
+
+    async def terminal(self, target: Target, pane: str) -> dict[str, object]:
+        return {"pane": pane, "rows": 24, "cols": 80, "ansi": "", "hash": ""}
+
+    async def send_text(
+        self, target: Target, text: str, *, enter: bool, raw: bool | None = None
+    ) -> bool:
+        self.texts.append((text, enter))
+        return True
+
+    async def send_key(self, target: Target, key: str) -> bool:
+        self.keys.append(key)
+        return True
+
+    async def send_followup(self, target: Target, text: str) -> bool:
+        self.texts.append((text, True))
+        return True
+
+    async def select_pane(self, target: Target, pane_id: str) -> Target:
+        return self.target
+
+    async def split(self, target: Target) -> str | None:
+        return None
+
+    async def close(self, target: Target) -> bool:
+        return True
+
+    async def rename(self, target: Target, title: str) -> bool:
+        return True
+
+    async def commands(self, target: Target) -> list[dict[str, str]]:
+        return []
+
+    async def create(
+        self, data: dict[str, Any], *, trusted_options: CreationOptions | None = None
+    ) -> Target:
+        return self.target
+
+    async def resume(self, target: Target, conversation_id: str) -> bool:
+        return True
 
 
 @pytest.fixture(autouse=True)
@@ -55,34 +132,44 @@ def _register(application: Application) -> None:
 
 
 @pytest.fixture
-async def app(make_ptb_app) -> Application:
+async def app(
+    make_ptb_app, tmp_path: Path, session_backend
+) -> AsyncIterator[Application]:
     """Real PTB Application with the callback_registry dispatch installed."""
-    return await make_ptb_app(_register)
+    application = await make_ptb_app(_register)
+    store = ProtocolStore(tmp_path / "protocol.sqlite3")
+    application.bot_data["session_service"] = LocalSessionService(
+        session_backend, store
+    )
+    try:
+        yield application
+    finally:
+        store.close()
+
+
+@pytest.fixture
+def session_backend() -> _SessionBackend:
+    return _SessionBackend(TEST_WINDOW_ID)
 
 
 @contextmanager
 def _toolbar_env(cfg: ToolbarConfig | None = None):
-    """Patch the toolbar's collaborators and yield (tmux, answer) mocks.
+    """Patch Telegram-facing collaborators and yield the callback answer mock.
 
-    Every dispatch test needs the same three stand-ins — ownership check,
-    multiplexer, and ``CallbackQuery.answer`` — plus, for custom-config tests,
+    Every dispatch test needs the ownership check and ``CallbackQuery.answer`` —
+    plus, for custom-config tests,
     the same config in both the keyboard builder and the callback module.
     """
     with ExitStack() as stack:
         enter = stack.enter_context
         enter(patch(f"{_MOD_CB}.user_owns_window", return_value=True))
-        mock_tmux = enter(patch(f"{_MOD_CB}.tmux_manager"))
         mock_answer = enter(
             patch.object(CallbackQuery, "answer", new_callable=AsyncMock)
         )
         if cfg is not None:
             enter(patch(f"{_MOD_KB}.get_toolbar_config", return_value=cfg))
             enter(patch(f"{_MOD_CB}.get_toolbar_config", return_value=cfg))
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=MagicMock(window_id=TEST_WINDOW_ID)
-        )
-        mock_tmux.send_keys = AsyncMock()
-        yield mock_tmux, mock_answer
+        yield mock_answer
 
 
 class TestKeyboardBuild:
@@ -134,6 +221,7 @@ class TestDispatchRoundTrip:
     async def test_key_action_dispatched_to_send_keys(
         self,
         app: Application,
+        session_backend: _SessionBackend,
         make_callback_update,
         action_name: str,
         expected_key: str,
@@ -141,7 +229,7 @@ class TestDispatchRoundTrip:
     ) -> None:
         update = make_callback_update(f"tb:{TEST_WINDOW_ID}:{action_name}", bot=app.bot)
         with (
-            _toolbar_env() as (mock_tmux, mock_answer),
+            _toolbar_env() as mock_answer,
             patch(
                 f"{_MOD_CB}.refresh_button_label",
                 new=AsyncMock(return_value="Edit"),
@@ -149,13 +237,15 @@ class TestDispatchRoundTrip:
         ):
             await app.process_update(update)
 
-        mock_tmux.send_keys.assert_awaited_once_with(
-            TEST_WINDOW_ID, expected_key, enter=False, literal=expected_literal
-        )
+        if expected_literal:
+            assert session_backend.keys == []
+            assert session_backend.texts == [(expected_key, False)]
+        else:
+            assert session_backend.keys == [expected_key]
         mock_answer.assert_awaited()
 
     async def test_text_action_sends_payload_to_window(
-        self, app: Application, make_callback_update
+        self, app: Application, make_callback_update, session_backend: _SessionBackend
     ) -> None:
         clear = ToolbarAction(
             name="clear",
@@ -171,17 +261,10 @@ class TestDispatchRoundTrip:
         update = make_callback_update(f"tb:{TEST_WINDOW_ID}:clear", bot=app.bot)
         with (
             _toolbar_env(cfg),
-            patch(
-                f"{_MOD_CB}.send_telegram_to_window",
-                new_callable=AsyncMock,
-                return_value=(True, "ok"),
-            ) as mock_send,
         ):
             await app.process_update(update)
 
-        mock_send.assert_awaited_once_with(
-            TEST_USER_ID, TEST_WINDOW_ID, TEST_THREAD_ID, "/clear", ANY
-        )
+        assert session_backend.texts == [("/clear", True)]
 
     async def test_dismiss_deletes_message(
         self, app: Application, make_callback_update
@@ -201,7 +284,7 @@ class TestDispatchRoundTrip:
         self, app: Application, make_callback_update
     ) -> None:
         update = make_callback_update(f"tb:{TEST_WINDOW_ID}:nothereyet", bot=app.bot)
-        with _toolbar_env() as (_tmux, mock_answer):
+        with _toolbar_env() as mock_answer:
             await app.process_update(update)
 
         mock_answer.assert_awaited_once()
@@ -212,7 +295,7 @@ class TestDispatchRoundTrip:
 
 class TestCustomConfigDispatch:
     async def test_custom_layout_renders_and_dispatches(
-        self, app: Application, make_callback_update
+        self, app: Application, make_callback_update, session_backend: _SessionBackend
     ) -> None:
         summary = ToolbarAction(
             name="summary",
@@ -238,22 +321,16 @@ class TestCustomConfigDispatch:
         assert kb.inline_keyboard[1][0].text == "Close"
 
         update = make_callback_update(f"tb:{TEST_WINDOW_ID}:summary", bot=app.bot)
-        with (
-            _toolbar_env(cfg),
-            patch(
-                f"{_MOD_CB}.send_telegram_to_window",
-                new_callable=AsyncMock,
-                return_value=(True, "ok"),
-            ) as mock_send,
-        ):
+        with _toolbar_env(cfg):
             await app.process_update(update)
 
-        mock_send.assert_awaited_once_with(
-            TEST_USER_ID, TEST_WINDOW_ID, TEST_THREAD_ID, "/summary", ANY
-        )
+        assert session_backend.texts == [("/summary", True)]
 
     async def test_user_config_overrides_builtin_action(
-        self, app: Application, make_callback_update
+        self,
+        app: Application,
+        make_callback_update,
+        session_backend: _SessionBackend,
     ) -> None:
         custom_mode = ToolbarAction(
             name="mode",
@@ -269,9 +346,7 @@ class TestCustomConfigDispatch:
             actions={**BUILTIN_ACTIONS, "mode": custom_mode},
         )
         update = make_callback_update(f"tb:{TEST_WINDOW_ID}:mode", bot=app.bot)
-        with _toolbar_env(cfg) as (mock_tmux, _answer):
+        with _toolbar_env(cfg):
             await app.process_update(update)
 
-        mock_tmux.send_keys.assert_awaited_once_with(
-            TEST_WINDOW_ID, "C-x", enter=False, literal=False
-        )
+        assert session_backend.keys == ["C-x"]

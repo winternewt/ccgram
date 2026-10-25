@@ -14,22 +14,17 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import time
-from typing import Any
 from urllib.parse import unquote, urlparse
 
 from ccgram.providers._jsonl import JsonlProvider
 from ccgram.providers.base import (
-    AgentMessage,
-    MessageRole,
     ProviderCapabilities,
     RESUME_ID_RE,
     ResumableSession,
     SessionStartEvent,
 )
-from ccgram.tool_format import format_tool_line
 
 _TRANSCRIPT_MAX_AGE_SECS = 120.0
 _MAX_CWD_SCAN_LINES = 30
@@ -71,23 +66,6 @@ _ANTIGRAVITY_BUILTINS: dict[str, str] = {
 }
 
 # Role mapping for Antigravity transcript entry types and sources
-_ANTIGRAVITY_ROLE_MAP: dict[str, MessageRole] = {
-    "user": "user",
-    "user_input": "user",
-    "user_explicit": "user",
-    "user_implicit": "user",
-    "planner_response": "assistant",
-    "model": "assistant",
-    "assistant": "assistant",
-    "info": "assistant",
-    "error": "assistant",
-}
-
-_METADATA_BLOCKS_RE = re.compile(
-    r"<(ADDITIONAL_METADATA|USER_SETTINGS_CHANGE|USER_INFORMATION|USER_RULES|SKILLS|PLUGINS|SUBAGENTS|MESSAGING|CONVERSATION_TRANSCRIPT|ARTIFACTS|SLASH_COMMANDS|GUIDELINES|COMMUNICATION_STYLE)>[\s\S]*?</\1>",
-    re.IGNORECASE,
-)
-_TAG_WRAPPERS_RE = re.compile(r"</?USER_REQUEST>", re.IGNORECASE)
 
 
 def _get_platform_executable_candidates() -> tuple[Path, ...]:
@@ -157,62 +135,6 @@ def get_antigravity_brain_dirs() -> list[Path]:
         except OSError:
             continue
     return dirs
-
-
-def clean_antigravity_content(text: str) -> str:
-    """Clean XML metadata wrappers and tags from Antigravity user input."""
-    if not text:
-        return ""
-    match = re.search(r"<USER_REQUEST>(.*?)</USER_REQUEST>", text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    cleaned = _METADATA_BLOCKS_RE.sub("", text)
-    cleaned = _TAG_WRAPPERS_RE.sub("", cleaned)
-    return cleaned.strip()
-
-
-def resolve_antigravity_role(entry: dict[str, Any]) -> MessageRole | None:
-    """Resolve entry to MessageRole ('user' or 'assistant')."""
-    entry_type = str(entry.get("type", "")).lower()
-    source = str(entry.get("source", "")).lower()
-
-    if entry_type in _ANTIGRAVITY_ROLE_MAP:
-        return _ANTIGRAVITY_ROLE_MAP[entry_type]
-    if source in _ANTIGRAVITY_ROLE_MAP:
-        return _ANTIGRAVITY_ROLE_MAP[source]
-    return None
-
-
-def is_antigravity_user_entry(entry: dict[str, Any]) -> bool:
-    """Return True if this entry represents a human turn."""
-    return resolve_antigravity_role(entry) == "user"
-
-
-def extract_antigravity_text(entry: dict[str, Any]) -> str:
-    """Extract and format readable text from an Antigravity transcript entry."""
-    role = resolve_antigravity_role(entry)
-    content = entry.get("content", "")
-
-    if isinstance(content, str):
-        text = clean_antigravity_content(content) if role == "user" else content
-    elif isinstance(content, list):
-        fragments: list[str] = []
-        for block in content:
-            if isinstance(block, dict):
-                btext = block.get("text")
-                if isinstance(btext, str):
-                    fragments.append(
-                        clean_antigravity_content(btext) if role == "user" else btext
-                    )
-            elif isinstance(block, str):
-                fragments.append(
-                    clean_antigravity_content(block) if role == "user" else block
-                )
-        text = "".join(fragments)
-    else:
-        text = ""
-
-    return text.strip()
 
 
 _WORKSPACE_KEYS = frozenset({"cwd", "directorypath", "workspace", "directory"})
@@ -583,109 +505,4 @@ class AntigravityProvider(JsonlProvider):
             f"📁 `{cwd}`\n"
             f"📄 `{os.path.basename(transcript_path)}` ({size} bytes)\n"
             f"⭐ ID: `{session_id[:8]}`"
-        )
-
-    def parse_transcript_entries(
-        self,
-        entries: list[dict[str, Any]],
-        pending_tools: dict[str, Any],
-        cwd: str | None = None,  # noqa: ARG002
-    ) -> tuple[list[AgentMessage], dict[str, Any]]:
-        """Parse Antigravity JSONL entries into AgentMessages with tool tracking."""
-        messages: list[AgentMessage] = []
-        pending = dict(pending_tools)
-
-        for entry in entries:
-            role = resolve_antigravity_role(entry)
-            entry_type = str(entry.get("type", "")).upper()
-            timestamp = str(entry.get("created_at") or entry.get("timestamp") or "")
-
-            # Tool calls
-            tool_calls = entry.get("tool_calls")
-            if isinstance(tool_calls, list) and role == "assistant":
-                for tc in tool_calls:
-                    if not isinstance(tc, dict):
-                        continue
-                    tool_id = str(
-                        tc.get("id")
-                        or tc.get("tool_call_id")
-                        or tc.get("name")
-                        or "unknown"
-                    )
-                    tool_name = str(tc.get("name") or "unknown")
-                    pending[tool_id] = tool_name
-                    tool_text = format_tool_line(tool_name, "")
-                    messages.append(
-                        AgentMessage(
-                            text=tool_text,
-                            role="assistant",
-                            content_type="tool_use",
-                            tool_name=tool_name,
-                            tool_use_id=tool_id,
-                            timestamp=timestamp or None,
-                        )
-                    )
-
-            # Tool execution output/results
-            if entry_type in (
-                "RUN_COMMAND",
-                "TOOL_RESULT",
-                "EXECUTE_RESULT",
-                "RESULT",
-            ):
-                tool_id = str(
-                    entry.get("tool_call_id")
-                    or entry.get("id")
-                    or entry.get("tool_name")
-                    or ""
-                )
-                tool_name = pending.pop(tool_id, None) if tool_id else None
-                if not tool_name:
-                    tool_name = str(entry.get("tool_name") or "tool")
-                content = entry.get("content", "")
-                res_text = str(content) if content else ""
-                if res_text:
-                    messages.append(
-                        AgentMessage(
-                            text=res_text,
-                            role="assistant",
-                            content_type="tool_result",
-                            tool_name=tool_name,
-                            tool_use_id=tool_id or None,
-                            timestamp=timestamp or None,
-                        )
-                    )
-                continue
-
-            text = extract_antigravity_text(entry)
-            if text and role:
-                messages.append(
-                    AgentMessage(
-                        text=text,
-                        role=role,
-                        content_type="text",
-                        timestamp=timestamp or None,
-                    )
-                )
-
-        return messages, pending
-
-    def is_user_transcript_entry(self, entry: dict[str, Any]) -> bool:
-        """Return True if entry represents a user prompt."""
-        return is_antigravity_user_entry(entry)
-
-    def parse_history_entry(self, entry: dict[str, Any]) -> AgentMessage | None:
-        """Parse a single entry for history display."""
-        role = resolve_antigravity_role(entry)
-        if not role:
-            return None
-        text = extract_antigravity_text(entry)
-        if not text:
-            return None
-        timestamp = str(entry.get("created_at") or entry.get("timestamp") or "")
-        return AgentMessage(
-            text=text,
-            role=role,
-            content_type="text",
-            timestamp=timestamp or None,
         )

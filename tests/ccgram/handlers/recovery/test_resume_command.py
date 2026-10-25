@@ -1,4 +1,6 @@
+import asyncio
 import json
+from typing import Any
 
 import pytest
 from pathlib import Path
@@ -17,17 +19,101 @@ from ccgram.handlers.recovery.resume_command import (
     _build_resume_keyboard,
     _index_msg_count,
     _relative_time,
+    _create_resume_window,
     format_session_entry,
     handle_resume_command_callback,
     resume_command,
     scan_all_sessions,
 )
 from ccgram.handlers.user_state import RESUME_SESSIONS
+from ccgram.session_protocol.backend import CreationOptions, Prompt, Target
+from ccgram.session_protocol.models import Status, utc_now
+from ccgram.session_protocol.service import LocalSessionService
+from ccgram.session_protocol.store import ProtocolStore
 
 _RC = "ccgram.handlers.recovery.resume_command"
 _NOW = 1_700_000_000.0
 _SID = "a1b2c3d4-0000-0000-0000-000000000001"
 _SID2 = "a1b2c3d4-0000-0000-0000-000000000002"
+
+
+class _CancelDuringCreateBackend:
+    def __init__(self) -> None:
+        self.target = Target(
+            id="@resumed",
+            title="project",
+            cwd="/tmp/proj",
+            provider="claude",
+            conversation_id="resume-session",
+            transcript=None,
+            pane_id="%5",
+            pane_title="claude",
+            rows=24,
+            cols=80,
+            process_id=5,
+            approval_mode="normal",
+            status=Status("idle", "", "screen", utc_now()),
+            host="test-host",
+            foreground_argv=("claude",),
+        )
+        self.create_started = asyncio.Event()
+        self.finish_create = asyncio.Event()
+        self.created: list[tuple[dict[str, Any], CreationOptions | None]] = []
+        self.closed: list[str] = []
+
+    async def targets(self) -> list[Target]:
+        return [self.target]
+
+    async def inspect(self, target_id: str) -> Target:
+        assert target_id == self.target.id
+        return self.target
+
+    async def prompt(self, target: Target) -> Prompt | None:
+        return None
+
+    async def terminal(self, target: Target, pane: str) -> dict[str, Any]:
+        raise AssertionError("terminal is unused")
+
+    async def send_text(
+        self, target: Target, text: str, *, enter: bool, raw: bool | None = None
+    ) -> bool:
+        raise AssertionError("send_text is unused")
+
+    async def send_key(self, target: Target, key: str) -> bool:
+        raise AssertionError("send_key is unused")
+
+    async def send_followup(self, target: Target, text: str) -> bool:
+        raise AssertionError("send_followup is unused")
+
+    async def select_pane(self, target: Target, pane_id: str) -> Target:
+        raise AssertionError("select_pane is unused")
+
+    async def split(self, target: Target) -> str | None:
+        raise AssertionError("split is unused")
+
+    async def close(self, target: Target) -> bool:
+        self.closed.append(target.id)
+        return True
+
+    async def rename(self, target: Target, title: str) -> bool:
+        raise AssertionError("rename is unused")
+
+    async def commands(self, target: Target) -> list[dict[str, str]]:
+        raise AssertionError("commands are unused")
+
+    async def create(
+        self,
+        data: dict[str, Any],
+        *,
+        trusted_options: CreationOptions | None = None,
+    ) -> Target:
+        self.created.append((data, trusted_options))
+        self.create_started.set()
+        await self.finish_create.wait()
+        return self.target
+
+    async def resume(self, target: Target, conversation_id: str) -> bool:
+        raise AssertionError("resume is unused")
 
 
 def _make_update(
@@ -807,6 +893,7 @@ def pick_env():
         patch(f"{_RC}.safe_edit", new_callable=AsyncMock) as edit,
         patch(f"{_RC}.get_thread_id", return_value=42),
         patch(f"{_RC}.Path") as path,
+        patch(f"{_RC}.adapter_for") as adapter_for,
     ):
         router.get_window_for_thread.return_value = None
         router.resolve_chat_id.return_value = -100999
@@ -814,12 +901,23 @@ def pick_env():
             claim_id="claim-1"
         )
         router.commit_topic_provisioning.return_value = True
-        tmux.create_window = AsyncMock(
-            return_value=(True, "Window created", "project", "@5")
+        adapter = MagicMock()
+        adapter.create = AsyncMock(
+            return_value=SimpleNamespace(target_id="@5", title="project")
         )
+        adapter.close = AsyncMock(return_value=(True, "Closed"))
+        adapter_for.return_value = adapter
         sync.wait_for_session_map_entry = AsyncMock()
         path.return_value.is_dir.return_value = True
-        yield SimpleNamespace(tmux=tmux, router=router, sync=sync, edit=edit, path=path)
+        yield SimpleNamespace(
+            tmux=tmux,
+            adapter=adapter,
+            router=router,
+            sync=sync,
+            edit=edit,
+            path=path,
+            adapter_for=adapter_for,
+        )
 
 
 async def _pick(
@@ -840,6 +938,63 @@ async def _pick(
 
 
 class TestResumePickCallback:
+    async def test_cancel_waits_for_protocol_creation_then_closes_created_target(
+        self, pick_env, tmp_path: Path
+    ) -> None:
+        from ccgram.session_protocol.telegram import adapter_for as protocol_adapter_for
+
+        backend = _CancelDuringCreateBackend()
+        store = ProtocolStore(tmp_path / "resume-cancel.sqlite3")
+        service = LocalSessionService(backend, store)
+        context = _make_context()
+        context.bot_data = {"session_service": service}
+        provider = MagicMock()
+        provider.capabilities.name = "claude"
+        provider.capabilities.supports_hook = False
+        pick_env.router.get_window_for_thread.return_value = "@old"
+        pick_env.adapter_for.side_effect = protocol_adapter_for
+
+        with (
+            patch(f"{_RC}.get_provider_for_window", return_value=provider),
+            patch(f"{_RC}.window_query.view_window", return_value=None),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.register_pending_creation"
+            ),
+            patch("ccgram.handlers.topics.topic_orchestration.clear_pending_creation"),
+        ):
+            task = asyncio.create_task(
+                _create_resume_window(
+                    100,
+                    42,
+                    _SID,
+                    "/tmp/proj",
+                    provider_name="claude",
+                    chat_id=-100999,
+                    context=context,
+                )
+            )
+            await asyncio.wait_for(backend.create_started.wait(), timeout=1)
+            task.cancel()
+            backend.finish_create.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert len(backend.created) == 1
+        data, options = backend.created[0]
+        assert data == {"provider": "claude", "directory": "/tmp/proj"}
+        assert options is not None
+        assert options.resume_id == _SID
+        assert backend.closed == ["@resumed"]
+        pick_env.router.attach_provisioning_target.assert_called_once_with(
+            "claim-1", "@resumed"
+        )
+        pick_env.router.abort_topic_provisioning.assert_called_once_with(
+            "claim-1", target_confirmed_absent=True
+        )
+        pick_env.router.mark_provisioning_uncertain.assert_not_called()
+        pick_env.router.unbind_thread.assert_not_called()
+        store.close()
+
     @pytest.mark.parametrize(
         ("index", "expected_id"), [(0, _SID), (1, _SID2)], ids=["first", "second"]
     )
@@ -857,10 +1012,10 @@ class TestResumePickCallback:
                 ctx,
             )
 
-        pick_env.tmux.create_window.assert_called_once_with(
-            "/tmp/proj",
-            agent_args=f"--resume {expected_id}",
-            launch_command="claude",
+        pick_env.adapter.create.assert_awaited_once_with(
+            {"provider": "claude", "directory": "/tmp/proj"},
+            approval_mode="normal",
+            resume_id=expected_id,
         )
         pick_env.sync.wait_for_session_map_entry.assert_awaited_once_with(
             "@5", resolve_window_id=resolve_alias
@@ -937,8 +1092,10 @@ class TestResumePickCallback:
         assert RESUME_SESSIONS not in ctx.user_data
 
     async def test_pick_reports_window_creation_failure(self, pick_env) -> None:
-        pick_env.tmux.create_window = AsyncMock(
-            return_value=(False, "Tmux error", None, None)
+        from ccgram.session_protocol.models import ProtocolError
+
+        pick_env.adapter.create = AsyncMock(
+            side_effect=ProtocolError(400, "invalid_request", "Tmux error")
         )
         ctx = _make_context()
 
@@ -950,8 +1107,12 @@ class TestResumePickCallback:
 
     async def test_failed_replacement_keeps_old_binding(self, pick_env) -> None:
         pick_env.router.get_window_for_thread.return_value = "@0"
-        pick_env.tmux.create_window = AsyncMock(
-            return_value=(False, "Directory does not exist: /gone", "", "")
+        from ccgram.session_protocol.models import ProtocolError
+
+        pick_env.adapter.create = AsyncMock(
+            side_effect=ProtocolError(
+                400, "invalid_request", "Directory does not exist: /gone"
+            )
         )
 
         query = await _pick(0, [_session()], _make_context())
@@ -980,7 +1141,7 @@ class TestResumePickCallback:
             pick_env.sync.wait_for_session_map_entry = AsyncMock(return_value=False)
             query = await _pick(0, [_session()], _make_context())
 
-        pick_env.tmux.kill_window.assert_not_called()
+        pick_env.adapter.close.assert_not_awaited()
         pick_env.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
         pick_env.router.unbind_thread.assert_not_called()
         assert "still starting" in pick_env.edit.call_args.args[1]
@@ -1112,21 +1273,21 @@ class TestResumePerWindowProvider:
     async def test_pick_uses_provider_recorded_on_the_session(
         self, mock_gpw: MagicMock, pick_env
     ) -> None:
-        mock_gpw.return_value.make_launch_args.return_value = "resume sess-1"
+        mock_gpw.return_value.capabilities.name = "codex"
 
         await _pick(0, [_session("sess-1", provider_name="codex")], _make_context())
 
         mock_gpw.assert_called_once_with("", provider_name="codex")
+        assert pick_env.adapter.create.call_args.args[0]["provider"] == "codex"
 
     @patch(f"{_RC}.get_provider")
     async def test_pick_falls_back_to_global_provider_when_unbound(
         self, mock_gp: MagicMock, pick_env
     ) -> None:
-        mock_gp.return_value.make_launch_args.return_value = "--resume sess-1"
+        mock_gp.return_value.capabilities.name = "claude"
 
         await _pick(0, [_session("sess-1")], _make_context())
 
         mock_gp.assert_called_once()
-        mock_gp.return_value.make_launch_args.assert_called_once_with(
-            resume_id="sess-1"
-        )
+        assert pick_env.adapter.create.call_args.args[0]["provider"] == "claude"
+        assert pick_env.adapter.create.call_args.kwargs["resume_id"] == "sess-1"

@@ -16,6 +16,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ChatAction
 from telegram.error import TelegramError
 from ...config import config
+from ...session_protocol.telegram import adapter_for
 from ...thread_router import thread_router
 from ...whisper import get_transcriber
 from ...whisper.base import TranscriptionResult, WhisperTranscriber
@@ -97,6 +98,7 @@ async def _send_transcribed_text(
     window_id: str,
     text: str,
     message: Message,
+    context: ContextTypes.DEFAULT_TYPE,
 ) -> tuple[bool, str | None]:
     """Forward auto-sent transcription through the confirmation send path."""
     # Lazy: voice_callbacks imports the provider-aware voice send path.
@@ -112,6 +114,7 @@ async def _send_transcribed_text(
         window_id,
         text,
         message.chat.id,
+        adapter=adapter_for(context.bot_data),
     )
 
 
@@ -152,7 +155,7 @@ async def _deliver_transcription(
     if transcription_message is None:
         return
     success, error = await _send_transcribed_text(
-        user_id, thread_id, window_id, text, message
+        user_id, thread_id, window_id, text, message, context
     )
     if not success:
         await safe_reply(message, f"❌ {error or 'Failed to send'}")

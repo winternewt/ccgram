@@ -7,6 +7,8 @@ lifecycle events, and retain only metadata safe enough for ``events.jsonl``.
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 from pathlib import Path
 from typing import cast
 
@@ -119,6 +121,8 @@ class ClaudeHookAdapter:
         "SubagentStop",
         "TeammateIdle",
         "TaskCompleted",
+        "PermissionRequest",
+        "PreToolUse",
     )
     # Claude installs all of its event types — the install path uses
     # ~/.claude/settings.json schema rather than the JSON-hook installer,
@@ -156,8 +160,13 @@ class PiHookAdapter:
         "PreCompact",
         "PostCompact",
     )
-    # Pi hooks are installed by cc-thingz hook-runner, not ccgram.
-    installable_events: tuple[str, ...] = ()
+    # Lifecycle and wait-state signals are sufficient for session tracking.
+    installable_events: tuple[str, ...] = (
+        "SessionStart",
+        "Stop",
+        "SessionEnd",
+        "Notification",
+    )
 
     def normalize(self, payload: dict[str, object]) -> NormalizedHookEvent | None:
         event_name = _str_field(payload, "hook_event_name")
@@ -318,6 +327,21 @@ _CLAUDE_STR_FIELDS: dict[str, tuple[str, ...]] = {
 def _extract_claude_data(
     event_name: str, payload: dict[str, object]
 ) -> dict[str, JsonValue]:
+    if event_name in {"PermissionRequest", "PreToolUse"}:
+        tool_input = payload.get("tool_input")
+        return {
+            "tool_name": _str_field(payload, "tool_name"),
+            "tool_input_hash": hashlib.sha256(
+                json.dumps(
+                    tool_input,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode()
+            ).hexdigest()
+            if isinstance(tool_input, dict)
+            else "",
+        }
     if event_name == "Stop":
         # The one event with a non-string field.
         return {

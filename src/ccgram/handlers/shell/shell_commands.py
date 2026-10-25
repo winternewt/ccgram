@@ -16,6 +16,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from uuid import uuid4
 
 import structlog
 
@@ -34,7 +35,6 @@ from ...llm import get_completer
 from ...llm import CommandResult
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
-from ..telegram_origin import send_telegram_to_window as send_to_window
 from ..callback_data import (
     CB_SHELL_CANCEL,
     CB_SHELL_CONFIRM_DANGER,
@@ -72,6 +72,12 @@ _BANG_HINT_TEXT = (
 
 # Telegram chat-action expires after ~5s; refresh slightly faster.
 _TYPING_REFRESH_INTERVAL = 4.0
+
+
+def _message_action_id(chat_id: int, message_id: int) -> str:
+    if message_id:
+        return f"telegram-message:{chat_id}:{message_id}"
+    return f"telegram-event:{uuid4()}"
 
 
 async def _send_typing(client: TelegramClient, chat_id: int, thread_id: int) -> None:
@@ -137,17 +143,17 @@ def _clear_shell_hint_seen(chat_id: int, thread_id: int) -> None:
     _shell_hint_seen.discard((chat_id, thread_id))
 
 
-async def _ensure_prompt_marker(window_id: str) -> None:
+async def _ensure_prompt_marker(window_id: str, *, adapter) -> None:
     """Lazily restore prompt marker if lost (exec bash, profile reload)."""
     # Lazy: sibling cycle — shell_prompt_orchestrator imports
     # shell_commands.handle_shell_message via callback dispatch.
     # Lazy: prompt orchestrator ↔ commands cycle
     from .shell_prompt_orchestrator import ensure_setup
 
-    await ensure_setup(window_id, "lazy")
+    await ensure_setup(window_id, "lazy", adapter=adapter)
 
 
-async def _cancel_stuck_input(window_id: str) -> None:
+async def _cancel_stuck_input(window_id: str, adapter, action_id: str) -> None:
     """Send Ctrl+C if the shell is stuck in partial/continuation input.
 
     Uses two signals to distinguish stuck-at-continuation from running-command:
@@ -199,7 +205,9 @@ async def _cancel_stuck_input(window_id: str) -> None:
 
     # Shell is idle but NOT at a clean prompt → continuation or partial input.
     logger.debug("Cancelling stuck input in window %s", window_id)
-    await tmux_manager.send_keys(window_id, "C-c", enter=False, literal=False)
+    await adapter.send_keys(
+        window_id, ["C-c"], action_id=f"{action_id}:cancel-stuck-input"
+    )
     await asyncio.sleep(0.3)
 
 
@@ -211,6 +219,8 @@ async def handle_shell_message(
     text: str,
     message: Message | None = None,
     chat_id: int | None = None,
+    *,
+    adapter,
 ) -> None:
     """Route shell provider messages: ``!`` prefix = raw, else = NL via LLM."""
     await enqueue_status_update(client, user_id, window_id, None, thread_id)
@@ -225,7 +235,7 @@ async def handle_shell_message(
         else thread_router.resolve_chat_id(user_id, thread_id)
     )
     clear_shell_pending(chat_id, thread_id)
-    await _ensure_prompt_marker(window_id)
+    await _ensure_prompt_marker(window_id, adapter=adapter)
 
     # Immediate ``typing`` action so the user sees the bot is processing
     # before any reply lands. Self-expires after ~5s; pulse() refreshes it
@@ -233,6 +243,7 @@ async def handle_shell_message(
     await _send_typing(client, chat_id, thread_id)
 
     msg_id = message.message_id if message is not None else 0
+    action_id = _message_action_id(chat_id, msg_id)
 
     # ⚡ Persistent ack so the user sees the bot is working before
     # tmux/LLM round-trip completes; replaced by ✅/❌ once exit is known.
@@ -251,6 +262,8 @@ async def handle_shell_message(
             raw,
             message_id=msg_id,
             chat_id=chat_id,
+            adapter=adapter,
+            action_id=action_id,
         )
         return
 
@@ -276,6 +289,8 @@ async def handle_shell_message(
             text,
             message_id=msg_id,
             chat_id=chat_id,
+            adapter=adapter,
+            action_id=action_id,
         )
         return
 
@@ -346,6 +361,9 @@ async def _execute_raw_command(
     command: str,
     message_id: int = 0,
     chat_id: int | None = None,
+    *,
+    adapter,
+    action_id: str,
 ) -> None:
     """Send a raw command to the shell and start output capture.
 
@@ -353,10 +371,14 @@ async def _execute_raw_command(
     forwarded to ``mark_telegram_command`` so the passive monitor can react
     on it once the exit code is known.
     """
-    await _cancel_stuck_input(window_id)
+    await _cancel_stuck_input(window_id, adapter, action_id)
 
-    success, err_message = await send_to_window(
-        user_id, window_id, thread_id, command, chat_id, raw=True
+    success, err_message = await adapter.send_text(
+        window_id,
+        command,
+        submit=True,
+        terminal_input=True,
+        action_id=action_id,
     )
     if not success:
         chat_id = thread_router.resolve_chat_id(user_id, thread_id)
@@ -484,6 +506,7 @@ async def handle_shell_callback(
     data: str,
     client: TelegramClient,
     thread_id: int | None,
+    adapter,
 ) -> None:
     """Handle shell command approval callbacks."""
     if thread_id is None:
@@ -499,7 +522,7 @@ async def handle_shell_callback(
     pending = _shell_pending.get((chat_id, thread_id))
 
     if data.startswith(CB_SHELL_RUN) or data.startswith(CB_SHELL_CONFIRM_DANGER):
-        await _cb_run(query, client, user_id, thread_id, chat_id, pending)
+        await _cb_run(query, client, user_id, thread_id, chat_id, pending, adapter)
     elif data.startswith(CB_SHELL_EDIT):
         await _cb_edit(query, user_id, chat_id, thread_id, pending)
     elif data.startswith(CB_SHELL_CANCEL):
@@ -513,6 +536,7 @@ async def _cb_run(
     thread_id: int,
     chat_id: int,
     pending: tuple[str, int, int] | None,
+    adapter,
 ) -> None:
     """Handle Run / Confirm Danger callbacks."""
     await query.answer()
@@ -542,6 +566,8 @@ async def _cb_run(
         command,
         message_id=msg_id,
         chat_id=chat_id,
+        adapter=adapter,
+        action_id=f"telegram-callback:{query.id}",
     )
 
 
@@ -596,6 +622,15 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.answer("This button has expired", show_alert=True)
         return
     thread_id = get_thread_id(update)
+    # Lazy: callback registration imports this module at startup; load the
+    # protocol backend/provider graph only for a valid shell action.
+    from ...session_protocol.telegram import adapter_for
+
     await handle_shell_callback(
-        query, user.id, data, PTBTelegramClient(context.bot), thread_id
+        query,
+        user.id,
+        data,
+        PTBTelegramClient(context.bot),
+        thread_id,
+        adapter_for(context.bot_data),
     )

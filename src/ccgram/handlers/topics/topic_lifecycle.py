@@ -28,6 +28,7 @@ from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..callback_tokens import revoke_window_tokens
 from ..cleanup import clear_topic_state
 from ...telegram_rate_limiter import NO_RETRY_RATE_LIMIT_ARGS, retry_after_seconds
+from ...session_protocol.telegram import TelegramSessionAdapter, adapter_for
 from ..polling.polling_state import (
     lifecycle_strategy,
     terminal_poll_state,
@@ -61,6 +62,8 @@ def rollback_legacy_herdr_binding(user_id: int, thread_id: int, window_id: str) 
 
 async def check_unbound_window_ttl(
     live_windows: "list[TmuxWindow] | None" = None,
+    *,
+    adapter: TelegramSessionAdapter,
 ) -> None:
     """Kill unbound tmux windows whose TTL has expired."""
     timeout = config.unbound_window_ttl_minutes * 60
@@ -91,15 +94,18 @@ async def check_unbound_window_ttl(
         if ws.unbound_timer is None:
             terminal_poll_state.set_unbound_timer(w.window_id, now)
 
-    await _kill_expired_unbound(now, timeout)
+    await _kill_expired_unbound(now, timeout, adapter)
     _prune_orphaned_poll_state(live_lookup, bound_lookup)
 
 
-async def _kill_expired_unbound(now: float, timeout: float) -> None:
+async def _kill_expired_unbound(
+    now: float, timeout: float, adapter: TelegramSessionAdapter
+) -> None:
     """Find and kill unbound windows past their TTL."""
     expired = terminal_poll_state.get_expired_unbound(now, timeout)
     for wid in expired:
-        if not await tmux_manager.kill_window(wid):
+        success, _ = await adapter.close(wid)
+        if not success:
             logger.warning("auto_kill_unbound_window_failed", window_id=wid)
             continue
 
@@ -234,14 +240,14 @@ async def _unbind_deleted_topic(
     chat_id: int | None,
     thread_id: int,
     wid: str,
+    adapter: TelegramSessionAdapter,
 ) -> None:
     """Tear down a window whose Telegram topic no longer exists."""
     w = await tmux_manager.find_window_by_id(wid)
     view = window_query.view_window(wid)
     killed = False
     if w and view and view.origin == CCGRAM_CREATED_WINDOW_ORIGIN:
-        await tmux_manager.kill_window(w.window_id)
-        killed = True
+        killed, _ = await adapter.close(w.window_id)
     terminal_poll_state.reset_probe_failures(wid)
     await clear_topic_state(user_id, thread_id, client, window_id=wid, chat_id=chat_id)
     thread_router.unbind_thread(
@@ -259,7 +265,9 @@ async def _unbind_deleted_topic(
     )
 
 
-async def probe_topic_existence(client: TelegramClient) -> None:
+async def probe_topic_existence(
+    client: TelegramClient, adapter: TelegramSessionAdapter
+) -> None:
     """Probe a slice of bound topics via Telegram API; detect deleted topics."""
     now = time.monotonic()
 
@@ -288,7 +296,9 @@ async def probe_topic_existence(client: TelegramClient) -> None:
                 "Topic_id_invalid" in e.message
                 or "thread not found" in e.message.lower()
             ):
-                await _unbind_deleted_topic(client, user_id, chat_id, thread_id, wid)
+                await _unbind_deleted_topic(
+                    client, user_id, chat_id, thread_id, wid, adapter
+                )
             elif isinstance(e, BadRequest) and "not enough rights" in e.message.lower():
                 _probe_pin_disabled.add(wid)
                 logger.info(
@@ -390,7 +400,7 @@ async def topic_closed_handler(
 
 
 async def topic_edited_handler(
-    update: Update, _context: ContextTypes.DEFAULT_TYPE
+    update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Handle topic rename — sync new name to tmux window and emoji cache.
 
@@ -437,7 +447,7 @@ async def topic_edited_handler(
         )
         return
 
-    renamed = await tmux_manager.rename_window(window_id, clean_name)
+    renamed, _ = await adapter_for(context.bot_data).rename(window_id, clean_name)
     if renamed:
         session_manager.set_display_name(window_id, clean_name)
         update_stored_topic_name(chat_id, thread_id, clean_name)

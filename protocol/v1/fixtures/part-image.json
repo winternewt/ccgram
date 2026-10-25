@@ -1,0 +1,19 @@
+{
+  "id": "conv/image#0",
+  "type": "image",
+  "text": null,
+  "toolCallId": null,
+  "name": null,
+  "kind": null,
+  "status": null,
+  "title": null,
+  "input": null,
+  "output": null,
+  "diff": null,
+  "url": "/v1/uploads/u_example",
+  "width": 640,
+  "height": 480,
+  "mime": "image/png",
+  "size": null,
+  "level": null
+}

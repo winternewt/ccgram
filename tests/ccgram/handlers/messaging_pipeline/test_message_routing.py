@@ -327,6 +327,13 @@ async def test_telegram_echo_is_suppressed_only_for_its_origin_topic(bot, mock_d
     assert mock_deps["eq"].call_args.kwargs["user_id"] == 200
 
 
+_ADAPTER = object()
+
+
+def _resolve_adapter() -> object:
+    return _ADAPTER
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -340,9 +347,15 @@ async def test_reload_request_types_command_into_window(bot, mock_deps, text):
         "ccgram.handlers.messaging_pipeline.plugin_reload.send_telegram_to_window",
         new=AsyncMock(return_value=(True, "")),
     ) as send:
-        await handle_new_message(_make_msg(text=text, provider_name="claude"), bot)
+        await handle_new_message(
+            _make_msg(text=text, provider_name="claude"),
+            bot,
+            resolve_adapter=_resolve_adapter,
+        )
 
-    send.assert_awaited_once_with(100, "@5", 42, "/reload-plugins", -100)
+    send.assert_awaited_once_with(
+        100, "@5", 42, "/reload-plugins", -100, adapter=_ADAPTER
+    )
     notices = [c.kwargs["parts"] for c in mock_deps["eq"].await_args_list]
     assert notices == [["parts"], ["⚡ Auto-sent /reload-plugins"]]
 
@@ -365,7 +378,7 @@ async def test_reload_not_sent_without_a_claude_answer_asking(
         "ccgram.handlers.messaging_pipeline.plugin_reload.send_telegram_to_window",
         new=AsyncMock(return_value=(True, "")),
     ) as send:
-        await handle_new_message(msg, bot)
+        await handle_new_message(msg, bot, resolve_adapter=_resolve_adapter)
 
     send.assert_not_awaited()
 
@@ -394,7 +407,7 @@ async def test_reload_not_sent_for_stale_or_undated_answer(bot, mock_deps, times
         "ccgram.handlers.messaging_pipeline.plugin_reload.send_telegram_to_window",
         new=AsyncMock(return_value=(True, "")),
     ) as send:
-        await handle_new_message(msg, bot)
+        await handle_new_message(msg, bot, resolve_adapter=_resolve_adapter)
 
     send.assert_not_awaited()
 
@@ -411,7 +424,7 @@ async def test_reload_sent_for_answer_written_just_now(bot, mock_deps):
         "ccgram.handlers.messaging_pipeline.plugin_reload.send_telegram_to_window",
         new=AsyncMock(return_value=(True, "")),
     ) as send:
-        await handle_new_message(msg, bot)
+        await handle_new_message(msg, bot, resolve_adapter=_resolve_adapter)
 
     send.assert_awaited_once()
 
@@ -426,7 +439,9 @@ async def test_reload_sent_once_per_window_for_several_bindings(bot, mock_deps):
         new=AsyncMock(return_value=(True, "")),
     ) as send:
         await handle_new_message(
-            _make_msg(text="Run /reload-plugins", provider_name="claude"), bot
+            _make_msg(text="Run /reload-plugins", provider_name="claude"),
+            bot,
+            resolve_adapter=_resolve_adapter,
         )
 
     assert send.await_count == 1
@@ -438,7 +453,9 @@ async def test_reload_delivery_failure_is_reported(bot, mock_deps):
         new=AsyncMock(return_value=(False, "Agent exited")),
     ):
         await handle_new_message(
-            _make_msg(text="Run /reload-plugins", provider_name="claude"), bot
+            _make_msg(text="Run /reload-plugins", provider_name="claude"),
+            bot,
+            resolve_adapter=_resolve_adapter,
         )
 
     last = mock_deps["eq"].await_args_list[-1].kwargs["parts"]
@@ -451,9 +468,46 @@ async def test_reload_repeat_within_cooldown_is_not_resent(bot, mock_deps):
         "ccgram.handlers.messaging_pipeline.plugin_reload.send_telegram_to_window",
         new=AsyncMock(return_value=(True, "")),
     ) as send:
-        await handle_new_message(msg, bot)
-        await handle_new_message(msg, bot)
+        await handle_new_message(msg, bot, resolve_adapter=_resolve_adapter)
+        await handle_new_message(msg, bot, resolve_adapter=_resolve_adapter)
 
     assert send.await_count == 1
     notices = [c.kwargs["parts"] for c in mock_deps["eq"].await_args_list]
     assert notices.count(["⚡ Auto-sent /reload-plugins"]) == 1
+
+
+async def test_reload_not_sent_without_a_session_adapter(bot, mock_deps):
+    """A caller with no adapter still delivers the answer, minus the reload."""
+    with patch(
+        "ccgram.handlers.messaging_pipeline.plugin_reload.send_telegram_to_window",
+        new=AsyncMock(return_value=(True, "")),
+    ) as send:
+        await handle_new_message(
+            _make_msg(text="Run /reload-plugins", provider_name="claude"), bot
+        )
+
+    send.assert_not_awaited()
+    notices = [c.kwargs["parts"] for c in mock_deps["eq"].await_args_list]
+    assert notices == [["parts"]]
+
+
+async def test_reload_reports_an_uninitialised_session_service(bot, mock_deps):
+    def unavailable() -> object:
+        raise RuntimeError("Telegram session service is not initialized")
+
+    with patch(
+        "ccgram.handlers.messaging_pipeline.plugin_reload.send_telegram_to_window",
+        new=AsyncMock(return_value=(True, "")),
+    ) as send:
+        await handle_new_message(
+            _make_msg(text="Run /reload-plugins", provider_name="claude"),
+            bot,
+            resolve_adapter=unavailable,
+        )
+
+    send.assert_not_awaited()
+    last = mock_deps["eq"].await_args_list[-1].kwargs["parts"]
+    assert last == [
+        "❌ Could not auto-send /reload-plugins: "
+        "Telegram session service is not initialized"
+    ]

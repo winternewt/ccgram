@@ -26,15 +26,17 @@ class TestStatusEsc:
         query = _q()
         with (
             patch(f"{MOD}.user_owns_window", return_value=True),
-            patch(f"{MOD}.tmux_manager") as tm,
+            patch("ccgram.session_protocol.telegram.adapter_for") as adapter_for,
         ):
-            tm.find_window_by_id = AsyncMock(return_value=MagicMock(window_id="@0"))
-            tm.send_keys = AsyncMock()
+            adapter = MagicMock()
+            adapter.send_keys = AsyncMock(return_value=(True, "Sent"))
+            adapter.send_text = AsyncMock(return_value=(True, "Sent"))
+            adapter_for.return_value = adapter
             await _handle_status_bar_action(
                 query, 1, f"{CB_STATUS_ESC}@0", MagicMock(), MagicMock()
             )
-        tm.send_keys.assert_awaited_once_with(
-            "@0", "Escape", enter=False, literal=False
+        adapter.send_keys.assert_awaited_once_with(
+            "@0", ["Escape"], action_id=f"telegram-callback:{query.id}"
         )
         query.answer.assert_awaited_once_with("\u238b Sent Escape")
 
@@ -42,9 +44,11 @@ class TestStatusEsc:
         query = _q()
         with (
             patch(f"{MOD}.user_owns_window", return_value=True),
-            patch(f"{MOD}.tmux_manager") as tm,
+            patch("ccgram.session_protocol.telegram.adapter_for") as adapter_for,
         ):
-            tm.find_window_by_id = AsyncMock(return_value=None)
+            adapter = MagicMock()
+            adapter.send_keys = AsyncMock(return_value=(False, "Window not found"))
+            adapter_for.return_value = adapter
             await _handle_status_bar_action(
                 query, 1, f"{CB_STATUS_ESC}@0", MagicMock(), MagicMock()
             )
@@ -120,22 +124,28 @@ class TestKeys:
         with (
             patch(f"{MOD}.user_owns_window", return_value=True),
             patch(f"{MOD}.get_thread_id", return_value=None),
-            patch(f"{MOD}.tmux_manager") as tm,
+            patch("ccgram.session_protocol.telegram.adapter_for") as adapter_for,
             patch(f"{MOD}._schedule_key_refresh") as mock_sched,
         ):
-            tm.find_window_by_id = AsyncMock(return_value=MagicMock(window_id="@0"))
-            tm.send_keys = AsyncMock()
+            adapter = MagicMock()
+            adapter.send_keys = AsyncMock(return_value=(True, "Sent"))
+            adapter_for.return_value = adapter
             await _handle_status_bar_action(
                 query, 1, f"{CB_KEYS_PREFIX}ent:@0", update, MagicMock()
             )
-        tm.send_keys.assert_awaited_once()
+        adapter.send_keys.assert_awaited_once_with(
+            "@0",
+            ["Enter"],
+            pane_id=None,
+            action_id=f"telegram-callback:{query.id}",
+        )
         mock_sched.assert_called_once()
 
     async def test_unknown_key_rejected(self):
         query = _q()
         with (
             patch(f"{MOD}.user_owns_window", return_value=True),
-            patch(f"{MOD}.tmux_manager"),
+            patch("ccgram.session_protocol.telegram.adapter_for"),
         ):
             await _handle_status_bar_action(
                 query, 1, f"{CB_KEYS_PREFIX}xxx:@0", MagicMock(), MagicMock()

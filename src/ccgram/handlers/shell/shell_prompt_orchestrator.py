@@ -22,6 +22,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 
 from ...telegram_client import TelegramClient
+from ...session_protocol.telegram import TelegramSessionAdapter, adapter_for
 from ..callback_registry import register
 from ..callback_tokens import compact_callback_data, resolve_callback_data
 from ..messaging_pipeline.message_sender import safe_send
@@ -65,6 +66,7 @@ async def ensure_setup(
     window_id: str,
     trigger: Trigger,
     *,
+    adapter: TelegramSessionAdapter,
     client: TelegramClient | None = None,
     chat_id: int = 0,
     thread_id: int = 0,
@@ -81,14 +83,14 @@ async def ensure_setup(
     st = _get_state(window_id)
 
     if trigger == "auto":
-        await setup_shell_prompt(window_id, clear=True)
+        await setup_shell_prompt(window_id, adapter=adapter, clear=True)
         return
 
     if trigger == "lazy":
         if st.skip_flag:
             return
         if not await has_prompt_marker(window_id):
-            await setup_shell_prompt(window_id, clear=False)
+            await setup_shell_prompt(window_id, adapter=adapter, clear=False)
         return
 
     if trigger in ("external_bind", "provider_switch"):
@@ -97,12 +99,16 @@ async def ensure_setup(
         suppress = st.was_offered if trigger == "external_bind" else st.skip_flag
         if not suppress:
             await _show_offer_keyboard(
-                window_id, client=client, chat_id=chat_id, thread_id=thread_id
+                window_id,
+                adapter=adapter,
+                client=client,
+                chat_id=chat_id,
+                thread_id=thread_id,
             )
         return
 
 
-async def accept_offer(window_id: str) -> None:
+async def accept_offer(window_id: str, *, adapter: TelegramSessionAdapter) -> None:
     """User chose 'Set up' -- run setup and record the offer."""
     if not _supports_prompt_markers():
         return
@@ -111,7 +117,7 @@ async def accept_offer(window_id: str) -> None:
 
     st = _get_state(window_id)
     st.was_offered = True
-    await setup_shell_prompt(window_id, clear=False)
+    await setup_shell_prompt(window_id, adapter=adapter, clear=False)
 
 
 def record_skip(window_id: str) -> None:
@@ -133,6 +139,7 @@ def _reset_all_state() -> None:
 async def _show_offer_keyboard(
     window_id: str,
     *,
+    adapter: TelegramSessionAdapter,
     client: TelegramClient | None = None,
     chat_id: int = 0,
     thread_id: int = 0,
@@ -145,7 +152,7 @@ async def _show_offer_keyboard(
         from ...providers.shell_infra import setup_shell_prompt
 
         st.was_offered = True
-        await setup_shell_prompt(window_id, clear=False)
+        await setup_shell_prompt(window_id, adapter=adapter, clear=False)
         return
 
     keyboard = InlineKeyboardMarkup(
@@ -207,7 +214,7 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if is_setup:
         try:
-            await accept_offer(window_id)
+            await accept_offer(window_id, adapter=adapter_for(context.bot_data))
             await query.edit_message_text("✅ Shell prompt marker configured")
         except TelegramError as exc:
             logger.debug("shell_setup_edit_failed", error=str(exc))

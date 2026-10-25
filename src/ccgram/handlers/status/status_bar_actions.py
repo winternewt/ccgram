@@ -103,7 +103,7 @@ def _clear_key_refreshes(window_id: str) -> None:
 
 
 async def _handle_status_recall(
-    query: CallbackQuery, user_id: int, data: str, update: Update
+    query: CallbackQuery, user_id: int, data: str, update: Update, adapter
 ) -> None:
     """Handle CB_STATUS_RECALL: send one of the last shown commands directly."""
     rest = data[len(CB_STATUS_RECALL) :]
@@ -164,6 +164,7 @@ async def _handle_status_recall(
             thread_id,
             window_id,
             command,
+            adapter=adapter,
         )
         await query.answer("\u21a9 Recalled")
         return
@@ -174,6 +175,8 @@ async def _handle_status_recall(
         thread_id,
         command,
         query.message.chat.id if query.message else None,
+        adapter=adapter,
+        action_id=f"telegram-callback:{query.id}",
     )
     if not ok:
         await query.answer(err or "Failed to send command", show_alert=True)
@@ -183,23 +186,26 @@ async def _handle_status_recall(
     await query.answer("\u21a9 Sent")
 
 
-async def _handle_status_esc(query: CallbackQuery, user_id: int, data: str) -> None:
+async def _handle_status_esc(
+    query: CallbackQuery, user_id: int, data: str, adapter
+) -> None:
     """Handle CB_STATUS_ESC: send Escape key from status message."""
     window_id = data[len(CB_STATUS_ESC) :]
     callback_chat_id = query.message.chat.id if query.message else None
     if not user_owns_window(user_id, window_id, callback_chat_id):
         await query.answer("Not your session", show_alert=True)
         return
-    w = await tmux_manager.find_window_by_id(window_id)
-    if w:
-        await tmux_manager.send_keys(w.window_id, "Escape", enter=False, literal=False)
+    sent, detail = await adapter.send_keys(
+        window_id, ["Escape"], action_id=f"telegram-callback:{query.id}"
+    )
+    if sent:
         await query.answer("\u238b Sent Escape")
     else:
-        await query.answer("Window not found", show_alert=True)
+        await query.answer(detail or "Unable to send Escape", show_alert=True)
 
 
 async def _handle_keys(
-    query: CallbackQuery, user_id: int, data: str, update: Update
+    query: CallbackQuery, user_id: int, data: str, update: Update, adapter
 ) -> None:
     """Handle CB_KEYS_PREFIX: send a quick key from screenshot keyboard."""
     rest = data[len(CB_KEYS_PREFIX) :]
@@ -222,19 +228,24 @@ async def _handle_keys(
         return
 
     tmux_key, enter, literal = key_info
-    w = await tmux_manager.find_window_by_id(window_id)
-    if not w:
-        await query.answer("Window not found", show_alert=True)
-        return
-
-    if pane_id:
-        await tmux_manager.send_keys_to_pane(
-            pane_id, tmux_key, enter=enter, literal=literal, window_id=window_id
+    if literal:
+        sent, detail = await adapter.send_text(
+            window_id,
+            tmux_key,
+            pane_id=pane_id,
+            submit=enter,
+            action_id=f"telegram-callback:{query.id}",
         )
     else:
-        await tmux_manager.send_keys(
-            w.window_id, tmux_key, enter=enter, literal=literal
+        sent, detail = await adapter.send_keys(
+            window_id,
+            [tmux_key],
+            pane_id=pane_id,
+            action_id=f"telegram-callback:{query.id}",
         )
+    if not sent:
+        await query.answer(detail or "Unable to send key", show_alert=True)
+        return
     await query.answer(KEY_LABELS.get(key_id, key_id))
 
     # Lazy: live_view ↔ screenshot_callbacks ↔ status pair through the
@@ -505,11 +516,23 @@ async def _handle_status_bar_action(
     }
     for prefix, handler in with_update.items():
         if data.startswith(prefix):
-            await handler(query, user_id, data, update)
+            if handler is _handle_status_recall or handler is _handle_keys:
+                # Lazy: screenshot and file callbacks share this dispatcher;
+                # load the protocol backend only for terminal input actions.
+                from ...session_protocol.telegram import adapter_for
+
+                adapter = adapter_for(context.bot_data)
+                await handler(query, user_id, data, update, adapter)
+            else:
+                await handler(query, user_id, data, update)
             return
 
     if data.startswith(CB_STATUS_ESC):
-        await _handle_status_esc(query, user_id, data)
+        # Lazy: Escape is the only other status action that needs the backend.
+        from ...session_protocol.telegram import adapter_for
+
+        adapter = adapter_for(context.bot_data)
+        await _handle_status_esc(query, user_id, data, adapter)
         return
 
     if data.startswith(CB_STATUS_BACKLOG_CANCEL):

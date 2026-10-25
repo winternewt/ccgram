@@ -36,6 +36,7 @@ dependencies = [
     "pyte>=0.8.2",
     "pathspec>=1.1.1",
     "aiohttp>=3.14.3",
+    "qrcode>=8.2,<9",
 ]
 
 [project.urls]
@@ -60,6 +61,8 @@ dev = [
     "pytest-timeout>=2.4.0",
     "ruff>=0.16.7",
     "hypothesis>=6.168.0",
+    "jsonschema>=4.26,<5",
+    "referencing>=0.37,<1",
 ]
 
 [build-system]
@@ -130,7 +133,7 @@ max-statements = 60
 
 [tool.deptry.per_rule_ignores]
 # DEP002: dev/CLI tools (never imported in src/)
-DEP002 = ["deptry", "pyright", "pytest", "pytest-asyncio", "pytest-cov", "pytest-timeout", "ruff", "hypothesis"]
+DEP002 = ["deptry", "pyright", "pytest", "pytest-asyncio", "pytest-cov", "pytest-timeout", "ruff", "hypothesis", "jsonschema", "referencing"]
 # DEP003: optional extras — imported only when installed (guarded by try/except ImportError)
 DEP003 = ["edge-tts"]
 

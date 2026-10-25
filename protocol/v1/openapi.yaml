@@ -1,0 +1,648 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ccgram/1 session protocol",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://localhost/v1"
+    }
+  ],
+  "security": [
+    {
+      "deviceToken": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "deviceToken": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "Request": {
+        "$ref": "./schemas/Request.json"
+      },
+      "Error": {
+        "$ref": "./schemas/Error.json"
+      },
+      "Session": {
+        "$ref": "./schemas/Session.json"
+      },
+      "Action": {
+        "$ref": "./schemas/Action.json"
+      },
+      "CreateSession": {
+        "$ref": "./schemas/CreateSession.json"
+      },
+      "Device": {
+        "$ref": "./schemas/Device.json"
+      },
+      "History": {
+        "$ref": "./schemas/History.json"
+      },
+      "Part": {
+        "$ref": "./schemas/Part.json"
+      },
+      "ActionResult": {
+        "$ref": "./schemas/ActionResult.json"
+      },
+      "Terminal": {
+        "$ref": "./schemas/Terminal.json"
+      },
+      "PairingResult": {
+        "$ref": "./schemas/PairingResult.json"
+      },
+      "Message": {
+        "$ref": "./schemas/Message.json"
+      },
+      "Meta": {
+        "$ref": "./schemas/Meta.json"
+      },
+      "Upload": {
+        "$ref": "./schemas/Upload.json"
+      }
+    }
+  },
+  "paths": {
+    "/meta": {
+      "get": {
+        "operationId": "getMeta",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Meta.json"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Error.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions": {
+      "get": {
+        "operationId": "listSessions",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "./schemas/Session.json"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Error.json"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createSession",
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Session.json"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Error.json"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./schemas/CreateSession.json"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions/{id}": {
+      "get": {
+        "operationId": "getSession",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Session.json"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Error.json"
+                }
+              }
+            }
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/sessions/{id}/history": {
+      "get": {
+        "operationId": "getHistory",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/History.json"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Error.json"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "conversation",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ]
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/sessions/{id}/actions": {
+      "post": {
+        "operationId": "executeAction",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/ActionResult.json"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Error.json"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "./schemas/Action.json"
+              }
+            }
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/sessions/{id}/terminal": {
+      "get": {
+        "operationId": "getTerminal",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Terminal.json"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Error.json"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "pane",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/sessions/{id}/commands": {
+      "get": {
+        "operationId": "getCommands",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "builtin",
+                          "skill",
+                          "command"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "description",
+                      "source"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Error.json"
+                }
+              }
+            }
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/uploads": {
+      "post": {
+        "operationId": "uploadFile",
+        "parameters": [
+          {
+            "name": "X-Filename",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Uploaded file reference",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Upload.json"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Error.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/devices/pair": {
+      "post": {
+        "operationId": "pairDevice",
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/PairingResult.json"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Error.json"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "name"
+                ],
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/devices": {
+      "get": {
+        "operationId": "listDevices",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "./schemas/Device.json"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Error.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/devices/{id}": {
+      "delete": {
+        "operationId": "revokeDevice",
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "default": {
+            "description": "Protocol error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Error.json"
+                }
+              }
+            }
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/devices/{id}/push": {
+      "put": {
+        "operationId": "registerPush",
+        "responses": {
+          "422": {
+            "description": "P3 capability not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Error.json"
+                }
+              }
+            }
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/stream": {
+      "get": {
+        "operationId": "openStream",
+        "responses": {
+          "101": {
+            "description": "WebSocket stream; see asyncapi.yaml"
+          },
+          "default": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schemas/Error.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/uploads/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "downloadUpload",
+        "responses": {
+          "200": {
+            "description": "Uploaded bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

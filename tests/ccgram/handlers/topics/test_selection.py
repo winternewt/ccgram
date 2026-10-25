@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,11 +15,11 @@ from ccgram.handlers.topics.directory_browser import (
     build_provider_picker,
 )
 from ccgram.handlers.topics.directory_callbacks import (
-    _accept_yolo_confirmation,
     _handle_confirm,
     _handle_mode_select,
     _handle_provider_select,
 )
+from ccgram.handlers.topics.window_launch_service import _accept_yolo_confirmation
 from ccgram.handlers.user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
 from ccgram.window_query import resolve_window_alias
 
@@ -79,6 +80,32 @@ def _make_context(user_data: dict | None = None) -> MagicMock:
     ctx.user_data = user_data if user_data is not None else {}
     ctx.bot = AsyncMock()
     return ctx
+
+
+@pytest.fixture(autouse=True)
+def _session_adapter(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    target = MagicMock(
+        target_id="@5",
+        title="proj",
+        session=MagicMock(title="proj"),
+        foreground_argv=("codex",),
+    )
+    adapter = MagicMock()
+
+    async def create(data, **_kwargs):
+        target.provider = data["provider"]
+        target.available = True
+        target.foreground_argv = (data["provider"],)
+        return target
+
+    adapter.create = AsyncMock(side_effect=create)
+    adapter.resolve = AsyncMock(return_value=(target, MagicMock()))
+    adapter.send_keys = AsyncMock(return_value=(True, "ok"))
+    monkeypatch.setattr(
+        "ccgram.handlers.topics.window_launch_service.adapter_for",
+        lambda _bot_data: adapter,
+    )
+    return adapter
 
 
 def _make_query(
@@ -230,7 +257,6 @@ class TestHandleProviderSelect:
 
 
 class TestHandleModeSelect:
-    @patch("ccgram.providers.resolve_launch_command")
     @patch(
         "ccgram.handlers.topics.window_launch_service.safe_edit", new_callable=AsyncMock
     )
@@ -247,7 +273,7 @@ class TestHandleModeSelect:
         mock_tmux: MagicMock,
         mock_sm: MagicMock,
         mock_edit: AsyncMock,
-        mock_resolve_launch: MagicMock,
+        _session_adapter: MagicMock,
     ) -> None:
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
@@ -257,9 +283,6 @@ class TestHandleModeSelect:
         mock_registry.get.return_value = mock_provider
         mock_registry_wls.get.return_value = mock_provider
 
-        mock_resolve_launch.return_value = (
-            "codex --dangerously-bypass-approvals-and-sandbox"
-        )
         mock_tmux.create_window = AsyncMock(
             return_value=(True, "Created window 'proj'", "proj", "@5")
         )
@@ -283,11 +306,8 @@ class TestHandleModeSelect:
             query, 100, f"{CB_MODE_SELECT}codex:yolo", update, context
         )
 
-        mock_resolve_launch.assert_called_once_with("codex", approval_mode="yolo")
-        mock_tmux.create_window.assert_called_once_with(
-            "/tmp/proj",
-            launch_command="codex --dangerously-bypass-approvals-and-sandbox",
-            workspace_id=None,
+        _session_adapter.create.assert_awaited_once_with(
+            {"provider": "codex", "directory": "/tmp/proj"}, approval_mode="yolo"
         )
         mock_tmux.stamp_pane_title.assert_awaited_once_with("@5", "codex")
         mock_sm.set_window_provider.assert_called_once_with("@5", "codex")
@@ -306,7 +326,6 @@ class TestHandleModeSelect:
         "ccgram.handlers.topics.window_launch_service._accept_yolo_confirmation",
         new_callable=AsyncMock,
     )
-    @patch("ccgram.providers.resolve_launch_command")
     @patch(
         "ccgram.handlers.topics.window_launch_service.safe_edit", new_callable=AsyncMock
     )
@@ -325,8 +344,8 @@ class TestHandleModeSelect:
         mock_sm: MagicMock,
         mock_sms: MagicMock,
         mock_edit: AsyncMock,
-        mock_resolve_launch: MagicMock,
         mock_accept_yolo: AsyncMock,
+        _session_adapter: MagicMock,
     ) -> None:
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = True
@@ -336,7 +355,6 @@ class TestHandleModeSelect:
         mock_registry.get.return_value = mock_provider
         mock_registry_wls.get.return_value = mock_provider
 
-        mock_resolve_launch.return_value = "claude --dangerously-skip-permissions"
         mock_tmux.create_window = AsyncMock(
             return_value=(True, "Created window 'proj'", "proj", "@5")
         )
@@ -351,6 +369,12 @@ class TestHandleModeSelect:
         mock_sm.get_window_state.return_value = MagicMock()
         mock_sms.wait_for_session_map_entry = AsyncMock(return_value=True)
         mock_accept_yolo.return_value = True
+        _session_adapter.resolve.return_value = (
+            SimpleNamespace(
+                foreground_argv=("claude",), provider="claude", available=True
+            ),
+            None,
+        )
 
         user_data = {"browse_path": "/tmp/proj", PENDING_THREAD_ID: 42}
         query = _make_query(data=f"{CB_MODE_SELECT}claude:yolo")
@@ -361,7 +385,8 @@ class TestHandleModeSelect:
             query, 100, f"{CB_MODE_SELECT}claude:yolo", update, context
         )
 
-        mock_accept_yolo.assert_awaited_once_with("@5")
+        mock_accept_yolo.assert_awaited_once_with("@5", _session_adapter)
+        mock_tr.commit_topic_provisioning.assert_called_once()
         mock_sms.wait_for_session_map_entry.assert_awaited_once_with(
             "@5", resolve_window_id=resolve_window_alias
         )
@@ -385,7 +410,11 @@ class TestHandleModeSelect:
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
     @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
     async def test_state_lost_fails_closed(
-        self, mock_registry: MagicMock, mock_tmux: MagicMock, mock_edit: AsyncMock
+        self,
+        mock_registry: MagicMock,
+        mock_tmux: MagicMock,
+        mock_edit: AsyncMock,
+        _session_adapter: MagicMock,
     ) -> None:
         mock_registry.is_valid.return_value = True
         mock_tmux.create_window = AsyncMock()
@@ -398,9 +427,9 @@ class TestHandleModeSelect:
         )
 
         mock_tmux.create_window.assert_not_called()
+        _session_adapter.create.assert_not_awaited()
         assert "expired" in mock_edit.call_args[0][1].lower()
 
-    @patch("ccgram.providers.resolve_launch_command")
     @patch(
         "ccgram.handlers.topics.window_launch_service.safe_edit", new_callable=AsyncMock
     )
@@ -422,7 +451,7 @@ class TestHandleModeSelect:
         mock_sm: MagicMock,
         mock_send_to_window: AsyncMock,
         mock_edit: AsyncMock,
-        mock_resolve_launch: MagicMock,
+        _session_adapter: MagicMock,
     ) -> None:
         mock_provider = MagicMock()
         mock_provider.capabilities.supports_hook = False
@@ -431,7 +460,6 @@ class TestHandleModeSelect:
         mock_registry.get.return_value = mock_provider
         mock_registry_wls.get.return_value = mock_provider
 
-        mock_resolve_launch.return_value = "claude"
         mock_tmux.create_window = AsyncMock(
             return_value=(True, "Created window 'proj'", "proj", "@1")
         )
@@ -459,7 +487,9 @@ class TestHandleModeSelect:
             query, 100, f"{CB_MODE_SELECT}claude:normal", update, context
         )
 
-        mock_send_to_window.assert_called_once_with(100, "@1", 42, "hello world", ANY)
+        mock_send_to_window.assert_called_once_with(
+            100, "@5", 42, "hello world", ANY, adapter=_session_adapter
+        )
         assert PENDING_THREAD_TEXT not in user_data
 
 
@@ -481,44 +511,45 @@ class TestAcceptYoloConfirmation:
     )
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
     async def test_detected_prompt_is_answered_with_down_then_enter(
-        self, mock_tmux: MagicMock, pane_text: str
+        self, mock_tmux: MagicMock, pane_text: str, _session_adapter: MagicMock
     ) -> None:
-        from unittest.mock import call
-
         mock_tmux.capture_pane = AsyncMock(return_value=pane_text)
-        mock_tmux.send_keys = AsyncMock(return_value=True)
-
-        assert await _accept_yolo_confirmation("@5", timeout=2.0) is True
-        assert mock_tmux.send_keys.call_args_list == [
-            call("@5", "Down", enter=False, literal=False),
-            call("@5", "Enter", enter=False, literal=False),
-        ]
+        assert (
+            await _accept_yolo_confirmation("@5", _session_adapter, timeout=2.0) is True
+        )
+        _session_adapter.send_keys.assert_awaited_once_with("@5", ["Down", "Enter"])
 
     @pytest.mark.parametrize(
         "capture", [None, "some other output"], ids=["no_capture", "unrelated_output"]
     )
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
     async def test_timeout_without_prompt_sends_no_keys(
-        self, mock_tmux: MagicMock, capture: str | None
+        self, mock_tmux: MagicMock, capture: str | None, _session_adapter: MagicMock
     ) -> None:
         mock_tmux.capture_pane = AsyncMock(return_value=capture)
-        mock_tmux.send_keys = AsyncMock(return_value=True)
-
-        assert await _accept_yolo_confirmation("@5", timeout=0.1) is False
-        mock_tmux.send_keys.assert_not_awaited()
+        assert (
+            await _accept_yolo_confirmation("@5", _session_adapter, timeout=0.1)
+            is False
+        )
+        _session_adapter.send_keys.assert_not_awaited()
 
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
     async def test_ignores_bypass_permissions_footer_without_dialog(
-        self, mock_tmux: MagicMock
+        self, mock_tmux: MagicMock, _session_adapter: MagicMock
     ) -> None:
         mock_tmux.capture_pane = AsyncMock(return_value="⏵⏵ bypass permissions")
 
-        assert await _accept_yolo_confirmation("@5", timeout=5.0) is False
+        assert (
+            await _accept_yolo_confirmation("@5", _session_adapter, timeout=5.0)
+            is False
+        )
         assert mock_tmux.capture_pane.await_count == 1
-        mock_tmux.send_keys.assert_not_called()
+        _session_adapter.send_keys.assert_not_awaited()
 
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
-    async def test_polls_until_prompt_appears(self, mock_tmux: MagicMock) -> None:
+    async def test_polls_until_prompt_appears(
+        self, mock_tmux: MagicMock, _session_adapter: MagicMock
+    ) -> None:
         mock_tmux.capture_pane = AsyncMock(
             side_effect=[
                 None,
@@ -526,26 +557,29 @@ class TestAcceptYoloConfirmation:
                 "Bypass Permissions mode\n❯ 1. No, exit",
             ]
         )
-        mock_tmux.send_keys = AsyncMock(return_value=True)
-
-        assert await _accept_yolo_confirmation("@5", timeout=5.0) is True
+        assert (
+            await _accept_yolo_confirmation("@5", _session_adapter, timeout=5.0) is True
+        )
         assert mock_tmux.capture_pane.await_count == 3
 
     @patch("ccgram.handlers.topics.window_launch_service.asyncio.get_running_loop")
     @patch("ccgram.handlers.topics.window_launch_service.tmux_manager")
     async def test_configured_timeout_allows_slow_cold_start(
-        self, mock_tmux: MagicMock, mock_get_loop: MagicMock, monkeypatch
+        self,
+        mock_tmux: MagicMock,
+        mock_get_loop: MagicMock,
+        monkeypatch,
+        _session_adapter: MagicMock,
     ) -> None:
         mock_get_loop.return_value.time.side_effect = [0.0, 0.0, 9.0, 9.0]
         mock_tmux.capture_pane = AsyncMock(
             side_effect=["Loading...", "Bypass Permissions mode\n❯ 1. No, exit"]
         )
-        mock_tmux.send_keys = AsyncMock(return_value=True)
         monkeypatch.setattr(
             "ccgram.handlers.topics.window_launch_service.config.yolo_confirmation_timeout",
             30.0,
             raising=False,
         )
 
-        assert await _accept_yolo_confirmation("@5") is True
+        assert await _accept_yolo_confirmation("@5", _session_adapter) is True
         assert mock_tmux.capture_pane.await_count == 2

@@ -1,0 +1,210 @@
+{
+  "claude": {
+    "source": [
+      {
+        "uuid": "entry",
+        "type": "assistant",
+        "timestamp": "2026-10-20T10:00:00Z",
+        "message": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello **world**"
+            },
+            {
+              "type": "thinking",
+              "thinking": "Check tests"
+            },
+            {
+              "type": "tool_use",
+              "id": "call",
+              "name": "Bash",
+              "input": {
+                "command": "uv run pytest"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "uuid": "result",
+        "type": "user",
+        "message": {
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "call",
+              "content": "passed"
+            }
+          ]
+        }
+      }
+    ],
+    "telegram": [
+      {
+        "text": "Hello **world**",
+        "role": "assistant",
+        "contentType": "text"
+      },
+      {
+        "text": "\u0002EXPQUOTE_START\u0002Check tests\u0002EXPQUOTE_END\u0002",
+        "role": "assistant",
+        "contentType": "thinking"
+      },
+      {
+        "text": "💻 **bash**: `uv run pytest`",
+        "role": "assistant",
+        "contentType": "tool_use"
+      },
+      {
+        "text": "💻 **bash**: `uv run pytest`\n  ⎿  1 lines\n\u0002EXPQUOTE_START\u0002passed\u0002EXPQUOTE_END\u0002",
+        "role": "assistant",
+        "contentType": "tool_result"
+      }
+    ]
+  },
+  "codex": {
+    "source": [
+      {
+        "type": "response_item",
+        "payload": {
+          "type": "message",
+          "id": "entry",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "Hello **world**"
+            }
+          ]
+        }
+      },
+      {
+        "type": "response_item",
+        "payload": {
+          "type": "function_call",
+          "call_id": "call",
+          "name": "exec_command",
+          "arguments": "{\"cmd\":\"uv run pytest\"}"
+        }
+      },
+      {
+        "type": "response_item",
+        "payload": {
+          "type": "function_call_output",
+          "call_id": "call",
+          "output": "passed"
+        }
+      }
+    ],
+    "telegram": [
+      {
+        "text": "Hello **world**",
+        "role": "assistant",
+        "contentType": "text"
+      },
+      {
+        "text": "💻 **exec_command**: `uv run pytest`",
+        "role": "assistant",
+        "contentType": "tool_use"
+      },
+      {
+        "text": "  ⎿  1 lines\n\u0002EXPQUOTE_START\u0002passed\u0002EXPQUOTE_END\u0002",
+        "role": "assistant",
+        "contentType": "tool_result"
+      }
+    ]
+  },
+  "gemini": {
+    "source": [
+      {
+        "id": "entry",
+        "type": "gemini",
+        "content": "Hello **world**",
+        "toolCalls": [
+          {
+            "id": "call",
+            "name": "run_shell_command",
+            "args": {
+              "command": "uv run pytest"
+            },
+            "resultDisplay": "passed"
+          }
+        ]
+      }
+    ],
+    "telegram": [
+      {
+        "text": "🔧 **run_shell_command**: `uv run pytest`",
+        "role": "assistant",
+        "contentType": "tool_use"
+      },
+      {
+        "text": "passed",
+        "role": "assistant",
+        "contentType": "tool_result"
+      },
+      {
+        "text": "Hello **world**",
+        "role": "assistant",
+        "contentType": "text"
+      }
+    ]
+  },
+  "pi": {
+    "source": [
+      {
+        "type": "message",
+        "id": "entry",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello **world**"
+            },
+            {
+              "type": "toolCall",
+              "id": "call",
+              "name": "bash",
+              "arguments": {
+                "command": "uv run pytest"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "message",
+        "id": "result",
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "call",
+          "content": [
+            {
+              "type": "text",
+              "text": "passed"
+            }
+          ]
+        }
+      }
+    ],
+    "telegram": [
+      {
+        "text": "Hello **world**",
+        "role": "assistant",
+        "contentType": "text"
+      },
+      {
+        "text": "💻 **bash**: `uv run pytest`",
+        "role": "assistant",
+        "contentType": "tool_use"
+      },
+      {
+        "text": "  ⎿  1 line\n\u0002EXPQUOTE_START\u0002passed\u0002EXPQUOTE_END\u0002",
+        "role": "assistant",
+        "contentType": "tool_result"
+      }
+    ]
+  }
+}

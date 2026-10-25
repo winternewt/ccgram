@@ -7,7 +7,9 @@ management.
 
 import asyncio
 import contextlib
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -178,7 +180,12 @@ async def enqueue_backlog_skip_notice(client: TelegramClient, intent: object) ->
         raise RuntimeError("backlog skip notice could not enter the delivery queue")
 
 
-async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  # noqa: C901, PLR0912
+async def handle_new_message(  # noqa: C901, PLR0912
+    msg: NewMessage,
+    client: TelegramClient,
+    *,
+    resolve_adapter: Callable[[], Any] | None = None,
+) -> None:
     """Handle a new assistant message — enqueue for sequential processing.
 
     Messages are queued per-user to ensure status messages always appear last.
@@ -198,7 +205,9 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
         _handle_unroutable_message(msg)
         return
 
-    reload_plugins = requests_plugin_reload(msg)
+    # Typing into a pane needs the session adapter; a caller without one
+    # (tests, the legacy callback) delivers the answer without the reload.
+    reload_plugins = resolve_adapter is not None and requests_plugin_reload(msg)
     reloaded_windows: set[str] = set()
 
     for user_id, window_id, thread_id, chat_id in active_users:
@@ -283,10 +292,18 @@ async def handle_new_message(msg: NewMessage, client: TelegramClient) -> None:  
             )
 
             notice = None
-            if reload_plugins and window_id not in reloaded_windows:
+            if (
+                reload_plugins
+                and resolve_adapter is not None
+                and window_id not in reloaded_windows
+            ):
                 reloaded_windows.add(window_id)
                 notice = await send_plugin_reload(
-                    user_id, window_id, thread_id, chat_id
+                    user_id,
+                    window_id,
+                    thread_id,
+                    chat_id,
+                    resolve_adapter=resolve_adapter,
                 )
             if notice is not None:
                 await enqueue_content_message(

@@ -1,0 +1,7 @@
+{
+  "id": "u_example",
+  "url": "/v1/uploads/u_example",
+  "name": "note.txt",
+  "size": 10,
+  "mime": "text/plain"
+}

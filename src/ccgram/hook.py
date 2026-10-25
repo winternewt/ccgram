@@ -75,6 +75,8 @@ _HOOK_EVENT_TYPES: tuple[str, ...] = (
     "SubagentStop",
     "TeammateIdle",
     "TaskCompleted",
+    "PermissionRequest",
+    "PreToolUse",
 )
 
 # Events that report the end of a session rather than the state of a window.
@@ -109,6 +111,7 @@ def _installable_events_for(provider_name: str) -> tuple[str, ...]:
 # without a churny import migration.
 _CODEX_HOOK_EVENTS: tuple[str, ...] = _installable_events_for("codex")
 _GEMINI_HOOK_EVENTS: tuple[str, ...] = _installable_events_for("gemini")
+_PI_HOOK_EVENTS: tuple[str, ...] = _installable_events_for("pi")
 
 
 def _codex_hooks_file() -> Path:
@@ -124,6 +127,14 @@ def _codex_config_file() -> Path:
 def _gemini_settings_file() -> Path:
     """Return the user-level Gemini settings.json path."""
     return Path.home() / ".gemini" / "settings.json"
+
+
+def _pi_hooks_file() -> Path:
+    """Return the user-level Pi hooks.json path, respecting PI_CODING_AGENT_DIR."""
+    agent_dir = os.environ.get("PI_CODING_AGENT_DIR")
+    if agent_dir:
+        return Path(agent_dir) / "hooks.json"
+    return Path.home() / ".pi" / "agent" / "hooks.json"
 
 
 def _current_hook_command(provider_name: str = "claude") -> str:
@@ -151,17 +162,23 @@ def _has_matching_hook(
 ) -> bool:
     """Check if an event has a hook command matching the predicate."""
     hooks = settings.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return False
     event_hooks = hooks.get(event_type, [])
+    if not isinstance(event_hooks, list):
+        return False
 
     for entry in event_hooks:
         if not isinstance(entry, dict):
             continue
         inner_hooks = entry.get("hooks", [])
-        for h in inner_hooks:
-            if not isinstance(h, dict):
+        if not isinstance(inner_hooks, list):
+            continue
+        for hook_config in inner_hooks:
+            if not isinstance(hook_config, dict):
                 continue
-            cmd = h.get("command", "")
-            if predicate(cmd):
+            command = hook_config.get("command", "")
+            if isinstance(command, str) and predicate(command):
                 return True
     return False
 
@@ -180,16 +197,24 @@ def _replace_hook_commands(
     settings: dict, event_type: str, predicate: Callable[[str], bool], replacement: str
 ) -> None:
     """Replace matching hook commands for an event with the given command."""
-    event_hooks = settings.get("hooks", {}).get(event_type, [])
+    hooks = settings.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return
+    event_hooks = hooks.get(event_type, [])
+    if not isinstance(event_hooks, list):
+        return
     for entry in event_hooks:
         if not isinstance(entry, dict):
             continue
-        for h in entry.get("hooks", []):
-            if not isinstance(h, dict):
+        inner_hooks = entry.get("hooks", [])
+        if not isinstance(inner_hooks, list):
+            continue
+        for hook_config in inner_hooks:
+            if not isinstance(hook_config, dict):
                 continue
-            cmd = h.get("command", "")
-            if predicate(cmd):
-                h["command"] = replacement
+            command = hook_config.get("command", "")
+            if isinstance(command, str) and predicate(command):
+                hook_config["command"] = replacement
 
 
 def _load_json_settings(path: Path) -> dict[str, Any] | None:
@@ -198,7 +223,7 @@ def _load_json_settings(path: Path) -> dict[str, Any] | None:
         return {}
     try:
         parsed = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
         print(f"Error reading {path}: {e}", file=sys.stderr)
         return None
     if not isinstance(parsed, dict):
@@ -219,17 +244,41 @@ def _json_hook_command_predicate(provider_name: str) -> Callable[[str], bool]:
     needle = f" --provider {provider_name} "
 
     def _predicate(command: str) -> bool:
-        return _is_any_ccgram_hook_command(command) and needle in f" {command} "
+        return (
+            isinstance(command, str)
+            and _is_any_ccgram_hook_command(command)
+            and needle in f" {command} "
+        )
 
     return _predicate
+
+
+def _json_hook_events(
+    settings: dict[str, Any], provider_name: str, *, create: bool = False
+) -> tuple[dict[str, Any], bool] | None:
+    """Return the effective event map and whether it is Pi's flat format."""
+    if provider_name == "pi":
+        # hook-runner prefers an object-valued nested `hooks`; otherwise it reads
+        # the hooks.json root map, excluding the `hookRunner` options key.
+        hooks = settings.get("hooks")
+        if isinstance(hooks, dict):
+            return hooks, False
+        if any(key != "hookRunner" for key in settings):
+            return settings, True
+        if create:
+            return settings.setdefault("hooks", {}), False
+        return {}, False
+
+    hooks = settings.setdefault("hooks", {}) if create else settings.get("hooks", {})
+    return (hooks, False) if isinstance(hooks, dict) else None
 
 
 def _hook_entry(provider_name: str, timeout_value: int) -> dict[str, Any]:
     """Build a command hook entry for non-Claude providers.
 
-    ``timeout_value`` is provider-defined: Codex hooks.json uses seconds,
-    Gemini settings.json uses milliseconds. Callers must pass the unit the
-    target schema expects.
+    ``timeout_value`` is provider-defined: Pi and Codex hooks.json use seconds,
+    while Gemini settings.json uses milliseconds. Callers pass the target
+    schema's unit.
     """
     return {
         "name": "ccgram-session-tracker",
@@ -244,15 +293,17 @@ def _install_json_hooks(
 ) -> int:
     """Install ccgram command hooks into a JSON settings file.
 
-    ``timeout_value`` is provider-defined (seconds for Codex, ms for Gemini).
+    ``timeout_value`` is provider-defined (seconds for Pi/Codex, ms for Gemini).
     """
     settings = _load_json_settings(path)
     if settings is None:
         return 1
-    hooks = settings.setdefault("hooks", {})
-    if not isinstance(hooks, dict):
+    hook_events = _json_hook_events(settings, provider_name, create=True)
+    if hook_events is None:
         print(f"Error reading {path}: hooks must be an object", file=sys.stderr)
         return 1
+    hooks, _flat = hook_events
+    hook_settings = {"hooks": hooks}
 
     installed_count = 0
     already_count = 0
@@ -266,8 +317,8 @@ def _install_json_hooks(
                 file=sys.stderr,
             )
             return 1
-        if _has_matching_hook(settings, event_type, predicate):
-            _replace_hook_commands(settings, event_type, predicate, hook_command)
+        if _has_matching_hook(hook_settings, event_type, predicate):
+            _replace_hook_commands(hook_settings, event_type, predicate, hook_command)
             already_count += 1
             continue
         event_hooks.append({"hooks": [_hook_entry(provider_name, timeout_value)]})
@@ -404,6 +455,7 @@ def _ensure_codex_feature_flag() -> int:
 
 _CODEX_HOOK_TIMEOUT_SECONDS = 5
 _GEMINI_HOOK_TIMEOUT_MS = 5_000
+_PI_HOOK_TIMEOUT_SECONDS = 5
 
 
 def _install_codex_hook() -> int:
@@ -422,6 +474,13 @@ def _install_gemini_hook() -> int:
     )
 
 
+def _install_pi_hook() -> int:
+    """Install user-level Pi hooks for the cc-thingz hook-runner extension."""
+    return _install_json_hooks(
+        _pi_hooks_file(), "pi", _PI_HOOK_EVENTS, _PI_HOOK_TIMEOUT_SECONDS
+    )
+
+
 def _uninstall_json_hooks(path: Path, provider_name: str) -> int:
     """Remove provider-specific ccgram hooks from a JSON settings file."""
     settings = _load_json_settings(path)
@@ -430,12 +489,16 @@ def _uninstall_json_hooks(path: Path, provider_name: str) -> int:
     if not settings:
         print(f"No {path} found — nothing to uninstall.")
         return 0
-    hooks = settings.get("hooks", {})
-    if not isinstance(hooks, dict):
-        return 0
+    hook_events = _json_hook_events(settings, provider_name)
+    if hook_events is None:
+        print(f"Error reading {path}: hooks must be an object", file=sys.stderr)
+        return 1
+    hooks, flat = hook_events
     predicate = _json_hook_command_predicate(provider_name)
     removed = 0
-    for event_hooks in hooks.values():
+    for event_name, event_hooks in hooks.items():
+        if flat and event_name in {"hookRunner", "hooks"}:
+            continue
         if not isinstance(event_hooks, list):
             continue
         for group in event_hooks:
@@ -476,9 +539,15 @@ def _json_hook_status(path: Path, provider_name: str, events: tuple[str, ...]) -
     if not settings:
         print(f"Not installed ({path} does not exist)")
         return 1
+    hook_events = _json_hook_events(settings, provider_name)
+    if hook_events is None:
+        print(f"Error reading {path}: hooks must be an object", file=sys.stderr)
+        return 1
+    hooks, _flat = hook_events
+    hook_settings = {"hooks": hooks}
     predicate = _json_hook_command_predicate(provider_name)
     statuses = {
-        event_type: _has_matching_hook(settings, event_type, predicate)
+        event_type: _has_matching_hook(hook_settings, event_type, predicate)
         for event_type in events
     }
     for event_type, installed in statuses.items():
@@ -505,10 +574,7 @@ def _install_hook(provider_name: str = "claude") -> int:  # noqa: PLR0912
         case "gemini":
             return _install_gemini_hook()
         case "pi":
-            print(
-                "Pi hooks are provided by the hook-runner extension; nothing to install."
-            )
-            return 0
+            return _install_pi_hook()
         case "claude":
             pass
         case _:
@@ -607,10 +673,7 @@ def _uninstall_hook(provider_name: str = "claude") -> int:  # noqa: PLR0911
         case "gemini":
             return _uninstall_json_hooks(_gemini_settings_file(), "gemini")
         case "pi":
-            print(
-                "Pi hooks are managed by the hook-runner extension; nothing to uninstall."
-            )
-            return 0
+            return _uninstall_json_hooks(_pi_hooks_file(), "pi")
         case "claude":
             pass
         case _:
@@ -685,12 +748,7 @@ def _hook_status(provider_name: str = "claude") -> int:  # noqa: PLR0911
                 _gemini_settings_file(), "gemini", _GEMINI_HOOK_EVENTS
             )
         case "pi":
-            print("Pi hook status depends on the hook-runner extension.")
-            print(
-                "Expected built-in hook-runner ccgram events: "
-                "SessionStart, Stop, SessionEnd, SubagentStart"
-            )
-            return 0
+            return _json_hook_status(_pi_hooks_file(), "pi", _PI_HOOK_EVENTS)
         case "claude":
             pass
         case _:
@@ -1238,9 +1296,7 @@ def _resolve_pi_transcript_path(session_id: str, cwd: str) -> str:
     """Find a Pi transcript path when hook-runner omitted it."""
     if not cwd:
         return ""
-    session_dir = (
-        Path.home() / ".pi" / "agent" / "sessions" / _encode_pi_cwd_dirname(cwd)
-    )
+    session_dir = _pi_hooks_file().parent / "sessions" / _encode_pi_cwd_dirname(cwd)
     if not session_dir.is_dir():
         return ""
     candidates: list[tuple[float, Path]] = []
@@ -1758,6 +1814,27 @@ def _defer_unavailable_herdr_snapshot(
     return True
 
 
+def _session_start_replays_from_zero(
+    provider_name: str, session_id: str, transcript_path: str
+) -> bool:
+    """Reserve a fresh exact Claude file; never rewind existing Claude history."""
+    if provider_name == "pi":
+        return True
+    if (
+        provider_name != "claude"
+        or not transcript_path
+        or Path(transcript_path).stem.casefold() != session_id.casefold()
+    ):
+        return False
+    try:
+        Path(transcript_path).stat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def _process_hook_stdin(
     provider_name: str | None = None,
 ) -> NormalizedHookEvent | None:
@@ -1865,7 +1942,9 @@ def _process_hook_stdin(
             transcript_path,
             tmux_session_name,
             detected_provider,
-            replay_from_start=detected_provider == "pi",
+            replay_from_start=_session_start_replays_from_zero(
+                detected_provider, normalized.session_id, transcript_path
+            ),
         )
         data = dict(normalized.data)
         data.update(

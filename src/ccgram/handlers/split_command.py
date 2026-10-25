@@ -15,7 +15,6 @@ from __future__ import annotations
 import structlog
 from typing import TYPE_CHECKING
 
-from ..multiplexer import multiplexer as tmux_manager
 from ..thread_router import thread_router
 
 if TYPE_CHECKING:
@@ -52,27 +51,36 @@ async def split_command(update: "Update", context: "ContextTypes.DEFAULT_TYPE") 
         await safe_reply(update.message, "❌ This topic is not bound to any session.")
         return
 
-    if not await tmux_manager.find_window_by_id(window_id):
-        await safe_reply(update.message, "❌ Window no longer exists.")
-        return
+    # Lazy: defer the protocol backend/provider graph until an authorized,
+    # bound /split command needs a terminal action.
+    from ..session_protocol.telegram import adapter_for
+
+    adapter = adapter_for(context.bot_data)
 
     command = " ".join(context.args).strip() if context.args else ""
     # Herdr cannot return a durable sibling target from a raw split pane. Reject
     # before creation so `/split <command>` never claims to have run a command.
-    if tmux_manager.capabilities.native_agent_status:
+    action_id = f"telegram-message:{update.update_id}"
+    success, result = await adapter.split(window_id, action_id=action_id)
+    if not success:
         await safe_reply(
-            update.message,
-            "❌ Splitting is not supported by this multiplexer backend.",
+            update.message, f"❌ {result or 'Could not split the window.'}"
         )
         return
-
-    new_pane = await tmux_manager.split_window(window_id)
-    if not new_pane:
-        await safe_reply(update.message, "❌ Could not split the window.")
-        return
+    new_pane = result
 
     if command:
-        await tmux_manager.send_to_pane(new_pane, command, window_id=window_id)
+        sent, detail = await adapter.send_text(
+            window_id,
+            command,
+            pane_id=new_pane,
+            submit=True,
+            terminal_input=True,
+            action_id=f"{action_id}:command",
+        )
+        if not sent:
+            await safe_reply(update.message, f"❌ {detail or 'Could not run command.'}")
+            return
         await safe_reply(
             update.message,
             f"✅ Split into pane `{new_pane}` and ran `{command}`. Use /panes to view.",

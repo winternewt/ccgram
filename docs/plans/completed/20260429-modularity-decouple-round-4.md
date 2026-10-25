@@ -2,7 +2,7 @@
 
 ## Overview
 
-Execute the six findings from `docs/plans/20260429-modularity-review.md`
+Execute the six findings from `docs/architecture-review/2026-04-29-modularity-review.md`
 in order: F1 → F4 → F2 → F3 → F5 → F6. Goal: shrink per-task context
 size, lower coupling, raise testability — without changing user-facing
 behavior.

@@ -31,6 +31,7 @@ from telegram import (
 from ..config import config
 from ..session import session_manager
 from ..telegram_client import PTBTelegramClient, TelegramClient
+from ..session_protocol.telegram import TelegramSessionAdapter, adapter_for
 from ..thread_router import thread_router
 from ..window_state_ports import identity_state
 from .callback_data import CB_AGENT_CANCEL, CB_AGENT_SET
@@ -132,6 +133,7 @@ async def _apply_switch(
     window_id: str,
     chosen: str,
     *,
+    adapter: TelegramSessionAdapter,
     client: TelegramClient | None = None,
     chat_id: int = 0,
     thread_id: int = 0,
@@ -179,6 +181,7 @@ async def _apply_switch(
         await ensure_setup(
             window_id,
             "provider_switch",
+            adapter=adapter,
             client=client,
             chat_id=chat_id,
             thread_id=thread_id,
@@ -373,7 +376,12 @@ async def agent_command(update: Update, _context: "ContextTypes.DEFAULT_TYPE") -
     client = PTBTelegramClient(update.get_bot())
     chat_id = update.message.chat.id
     _, reply = await _apply_switch(
-        window_id, arg, client=client, chat_id=chat_id, thread_id=thread_id
+        window_id,
+        arg,
+        adapter=adapter_for(_context.bot_data),
+        client=client,
+        chat_id=chat_id,
+        thread_id=thread_id,
     )
     await safe_reply(update.message, reply)
 
@@ -415,7 +423,12 @@ async def _dispatch(update: Update, _context: "ContextTypes.DEFAULT_TYPE") -> No
     chat_id = query.message.chat.id if query.message else 0
     thread_id = get_thread_id(update) or 0
     _, reply = await _apply_switch(
-        window_id, chosen, client=client, chat_id=chat_id, thread_id=thread_id
+        window_id,
+        chosen,
+        adapter=adapter_for(_context.bot_data),
+        client=client,
+        chat_id=chat_id,
+        thread_id=thread_id,
     )
     await _ack_and_strip(query, reply)
 

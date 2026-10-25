@@ -15,7 +15,7 @@ import structlog
 
 from telegram import CallbackQuery, Update
 from ...telegram_client import PTBTelegramClient
-from ...multiplexer import multiplexer as tmux_manager
+from ...session_protocol.models import ProtocolError
 from ..callback_data import (
     CB_ASK_CHOICE,
     CB_ASK_DOWN,
@@ -32,7 +32,9 @@ from ..callback_registry import register
 from .interactive_ui import (
     advance_interactive_sequence,
     clear_interactive_msg,
+    get_interactive_prompt_fingerprint,
     handle_interactive_ui,
+    is_current_interactive_message,
     is_current_interactive_prompt,
 )
 
@@ -133,6 +135,9 @@ async def _handle_direct_choice(
     window_id: str,
     pane_id: str | None,
     choice: tuple[str, int, str, str | None] | None,
+    adapter,
+    action_id: str,
+    expected_prompt: str | None,
 ) -> None:
     """Send one validated direct choice and invalidate its sequence."""
     if choice is None:
@@ -146,15 +151,17 @@ async def _handle_direct_choice(
         return
     enter = key in {"y", "n"}
     try:
-        if pane_id:
-            sent = await tmux_manager.send_keys_to_pane(
-                pane_id, key, enter=enter, literal=True, window_id=window_id
-            )
-        else:
-            window = await tmux_manager.find_window_by_id(window_id)
-            sent = bool(window) and await tmux_manager.send_keys(
-                window.window_id, key, enter=enter, literal=True
-            )
+        sent, message = await adapter.send_text(
+            window_id,
+            key,
+            pane_id=pane_id,
+            submit=enter,
+            terminal_input=True,
+            action_id=action_id,
+            expected_prompt=expected_prompt,
+        )
+    except ProtocolError:
+        raise
     except Exception:  # noqa: BLE001 — report any backend delivery failure to user
         logger.warning("Failed to send direct interactive choice", exc_info=True)
         sent = False
@@ -200,44 +207,83 @@ async def handle_interactive_callback(
         await query.answer("Not your session", show_alert=True)
         return
 
-    if cb_prefix == CB_ASK_CHOICE:
-        await _handle_direct_choice(
-            query,
-            user_id,
-            thread_id,
-            chat_id,
-            message.message_id if message is not None else None,
-            window_id,
-            pane_id,
-            parse_direct_choice_callback(data),
-        )
-        return
+    # One service instance is shared by all Telegram handlers and protocol clients.
+    # Lazy: this callback module loads during registry setup; defer the protocol
+    # backend and its provider imports until an interactive callback is accepted.
+    from ...session_protocol.telegram import adapter_for
 
-    client = PTBTelegramClient(context.bot)
-    if cb_prefix == CB_ASK_REFRESH:
-        await handle_interactive_ui(
-            client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
-        )
-        await query.answer("\U0001f504")
-    else:
-        tmux_key, refresh_ui = INTERACTIVE_KEY_MAP[cb_prefix]
-        if pane_id:
-            sent = await tmux_manager.send_keys_to_pane(
-                pane_id, tmux_key, enter=False, literal=False, window_id=window_id
+    adapter = adapter_for(context.bot_data)
+    action_id = f"telegram-callback:{query.id}"
+
+    message_id = message.message_id if message is not None else None
+    expected_prompt = get_interactive_prompt_fingerprint(
+        user_id, thread_id, chat_id, message_id
+    )
+
+    try:
+        if cb_prefix == CB_ASK_CHOICE:
+            await _handle_direct_choice(
+                query,
+                user_id,
+                thread_id,
+                chat_id,
+                message.message_id if message is not None else None,
+                window_id,
+                pane_id,
+                parse_direct_choice_callback(data),
+                adapter,
+                action_id,
+                expected_prompt,
             )
-        else:
-            w = await tmux_manager.find_window_by_id(window_id)
-            sent = bool(w) and await tmux_manager.send_keys(
-                w.window_id, tmux_key, enter=False, literal=False
-            )
-        if sent and refresh_ui:
-            await asyncio.sleep(0.5)
+            return
+
+        client = PTBTelegramClient(context.bot)
+        if cb_prefix == CB_ASK_REFRESH:
             await handle_interactive_ui(
-                client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+                client,
+                user_id,
+                window_id,
+                thread_id,
+                pane_id=pane_id,
+                chat_id=chat_id,
             )
-        elif sent and not refresh_ui:
-            await clear_interactive_msg(user_id, client, thread_id, chat_id=chat_id)
-        await query.answer(INTERACTIVE_KEY_LABELS.get(cb_prefix, ""))
+            await query.answer("\U0001f504")
+        else:
+            if not is_current_interactive_message(
+                user_id, thread_id, chat_id, message_id
+            ):
+                await query.answer("This prompt has expired", show_alert=True)
+                return
+            tmux_key, refresh_ui = INTERACTIVE_KEY_MAP[cb_prefix]
+            sent, message_text = await adapter.send_keys(
+                window_id,
+                [tmux_key],
+                pane_id=pane_id,
+                action_id=action_id,
+                expected_prompt=expected_prompt,
+            )
+            if not sent:
+                await query.answer(
+                    message_text or "Unable to send key. Try again.", show_alert=True
+                )
+                return
+            if refresh_ui:
+                await asyncio.sleep(0.5)
+                await handle_interactive_ui(
+                    client,
+                    user_id,
+                    window_id,
+                    thread_id,
+                    pane_id=pane_id,
+                    chat_id=chat_id,
+                )
+            else:
+                await clear_interactive_msg(user_id, client, thread_id, chat_id=chat_id)
+            await query.answer(INTERACTIVE_KEY_LABELS.get(cb_prefix, message_text))
+    except ProtocolError as exc:
+        if exc.code != "session_busy":
+            raise
+        await query.answer("Session is busy. Try again.", show_alert=True)
 
 
 # --- Registry dispatch entry point ---

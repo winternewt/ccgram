@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "epoch": "e_example",
+  "class": "durable",
+  "type": "session.updated",
+  "data": {
+    "bindingVersion": 13,
+    "title": "new name"
+  },
+  "sessionId": "s_00000000000000000000000001",
+  "seq": 10
+}

@@ -1,5 +1,6 @@
 """Tests for one-tap selections in interactive terminal prompts."""
 
+from hashlib import sha256
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,7 +16,9 @@ from ccgram.handlers.interactive.interactive_ui import (
     _interactive_contents,
     _interactive_mode,
     _interactive_msgs,
+    _interactive_prompt_fingerprints,
     _interactive_sequences,
+    _next_interactive_sequence,
     handle_interactive_ui,
     is_current_interactive_prompt,
     parse_direct_choices,
@@ -129,6 +132,12 @@ class TestDirectChoiceKeyboard:
         ):
             assert await handle_interactive_ui(client, 10, "@12", thread_id=42)
 
+        prompt = "Pick one:\n  1. Alpha\n  2. Beta\n  Enter to select"
+        assert (
+            _interactive_prompt_fingerprints[(10, -100, 42)]
+            == sha256(prompt.encode()).hexdigest()
+        )
+
         keyboard = client.send_message.call_args.kwargs["reply_markup"]
         assert _button_data(keyboard)[0] == f"{CB_ASK_CHOICE}1:1:@12"
         assert _interactive_contexts[(10, -100, 42)] == (-100, 99)
@@ -155,6 +164,7 @@ def _clear_interactive_state():
         _interactive_contents,
         _interactive_mode,
         _interactive_msgs,
+        _interactive_prompt_fingerprints,
         _interactive_sequences,
     ):
         state.clear()
@@ -164,6 +174,7 @@ def _clear_interactive_state():
         _interactive_contents,
         _interactive_mode,
         _interactive_msgs,
+        _interactive_prompt_fingerprints,
         _interactive_sequences,
     ):
         state.clear()
@@ -201,29 +212,28 @@ class TestDirectChoiceCallbacks:
             "w2:p1",
         )
 
+    @pytest.mark.parametrize(
+        ("choice_key", "expected_submit"),
+        [("1", False), ("y", True), ("n", True)],
+        ids=["number-does-not-enter", "yes-enters", "no-enters"],
+    )
     async def test_sends_direct_choice_only_for_current_chat_thread_and_sequence(
-        self,
+        self, choice_key: str, expected_submit: bool
     ) -> None:
         _interactive_mode[(10, -100, 42)] = "@12"
         _interactive_msgs[(10, -100, 42)] = 99
         _interactive_contexts[(10, -100, 42)] = (-100, 99)
         _interactive_sequences[(10, -100, 42)] = 7
+        _interactive_prompt_fingerprints[(10, -100, 42)] = "prompt-fingerprint"
         query, update = _callback_update(chat_id=-100, thread_id=42, message_id=99)
 
-        multiplexer = MagicMock()
-        multiplexer.find_window_by_id = AsyncMock(
-            return_value=MagicMock(window_id="@12")
-        )
-        multiplexer.send_keys = AsyncMock(return_value=True)
+        adapter = MagicMock(send_text=AsyncMock(return_value=(True, "Sent")))
         with (
             patch(
                 "ccgram.handlers.callback_helpers.user_owns_window",
                 return_value=True,
             ),
-            patch(
-                "ccgram.handlers.interactive.interactive_callbacks.tmux_manager",
-                multiplexer,
-            ),
+            patch("ccgram.session_protocol.telegram.adapter_for", return_value=adapter),
             patch(
                 "ccgram.handlers.interactive.interactive_callbacks.PTBTelegramClient"
             ),
@@ -231,13 +241,18 @@ class TestDirectChoiceCallbacks:
             await handle_interactive_callback(
                 query,
                 10,
-                f"{CB_ASK_CHOICE}1:7:@12",
+                f"{CB_ASK_CHOICE}{choice_key}:7:@12",
                 update,
                 MagicMock(),
             )
 
-        multiplexer.send_keys.assert_awaited_once_with(
-            "@12", "1", enter=False, literal=True
+        adapter.send_text.assert_awaited_once()
+        assert adapter.send_text.await_args.args == ("@12", choice_key)
+        assert adapter.send_text.await_args.kwargs["terminal_input"] is True
+        assert adapter.send_text.await_args.kwargs["submit"] is expected_submit
+        assert (
+            adapter.send_text.await_args.kwargs["expected_prompt"]
+            == "prompt-fingerprint"
         )
         assert _interactive_sequences[(10, -100, 42)] == 8
 
@@ -257,20 +272,13 @@ class TestDirectChoiceCallbacks:
             chat_id=chat_id, thread_id=thread_id, message_id=message_id
         )
 
-        multiplexer = MagicMock()
-        multiplexer.find_window_by_id = AsyncMock(
-            return_value=MagicMock(window_id="@12")
-        )
-        multiplexer.send_keys = AsyncMock()
+        adapter = MagicMock(send_text=AsyncMock())
         with (
             patch(
                 "ccgram.handlers.callback_helpers.user_owns_window",
                 return_value=True,
             ),
-            patch(
-                "ccgram.handlers.interactive.interactive_callbacks.tmux_manager",
-                multiplexer,
-            ),
+            patch("ccgram.session_protocol.telegram.adapter_for", return_value=adapter),
             patch(
                 "ccgram.handlers.interactive.interactive_callbacks.PTBTelegramClient"
             ),
@@ -283,7 +291,7 @@ class TestDirectChoiceCallbacks:
                 MagicMock(),
             )
 
-        multiplexer.send_keys.assert_not_awaited()
+        adapter.send_text.assert_not_awaited()
         query.answer.assert_awaited_once_with(
             "This prompt has expired", show_alert=True
         )
@@ -295,20 +303,13 @@ class TestDirectChoiceCallbacks:
         _interactive_sequences[(10, -100, 42)] = 7
         query, update = _callback_update(chat_id=-100, thread_id=42, message_id=99)
 
-        multiplexer = MagicMock()
-        multiplexer.find_window_by_id = AsyncMock(
-            return_value=MagicMock(window_id="@12")
-        )
-        multiplexer.send_keys = AsyncMock(return_value=False)
+        adapter = MagicMock(send_text=AsyncMock(return_value=(False, "busy")))
         with (
             patch(
                 "ccgram.handlers.callback_helpers.user_owns_window",
                 return_value=True,
             ),
-            patch(
-                "ccgram.handlers.interactive.interactive_callbacks.tmux_manager",
-                multiplexer,
-            ),
+            patch("ccgram.session_protocol.telegram.adapter_for", return_value=adapter),
         ):
             await handle_interactive_callback(
                 query,
@@ -319,6 +320,7 @@ class TestDirectChoiceCallbacks:
             )
 
         assert _interactive_sequences[(10, -100, 42)] == 7
+        adapter.send_text.assert_awaited_once()
         query.answer.assert_awaited_once_with(
             "Unable to send choice. Try again.", show_alert=True
         )
@@ -336,3 +338,8 @@ class TestDirectChoiceCallbacks:
         assert is_current_interactive_prompt(10, 42, "@12", -100, 99, 7)
         assert is_current_interactive_prompt(10, 42, "@13", -101, 99, 7)
         assert not is_current_interactive_prompt(10, 42, "@12", -101, 99, 7)
+
+    def test_raw_prompt_change_advances_sequence_when_rendered_text_is_equal(self):
+        key = (10, -100, 42)
+        assert _next_interactive_sequence(key, "same rendered text", "first") == 1
+        assert _next_interactive_sequence(key, "same rendered text", "second") == 2

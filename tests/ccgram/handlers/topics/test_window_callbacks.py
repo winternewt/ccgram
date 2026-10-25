@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
-from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock, patch
+from dataclasses import dataclass, replace
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from telegram import Bot, CallbackQuery, Update
@@ -15,10 +16,17 @@ from ccgram.handlers.callback_data import CB_WIN_BIND, CB_WIN_CANCEL, CB_WIN_NEW
 from ccgram.handlers.topics.directory_browser import UNBOUND_WINDOWS_KEY
 from ccgram.handlers.topics.new_command import new_command
 from ccgram.handlers.user_state import PENDING_THREAD_ID, PENDING_THREAD_TEXT
+from ccgram.multiplexer.base import ForegroundInfo
 from ccgram.handlers.topics.window_callbacks import (
     _forward_pending_text,
+    _send_verified_shell_input,
     handle_window_callback,
 )
+from ccgram.session_protocol.backend import Target
+from ccgram.session_protocol.models import Status, utc_now
+from ccgram.session_protocol.service import LocalSessionService
+from ccgram.session_protocol.store import ProtocolStore
+from ccgram.session_protocol.telegram import TelegramSessionAdapter
 
 _MODULE = "ccgram.handlers.topics.window_callbacks."
 _FIND_WINDOW = "ccgram.multiplexer.tmux.tmux_manager.find_window_by_id"
@@ -44,6 +52,7 @@ def _make_query_update_context(
     context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
     context.user_data = user_data if user_data is not None else {}
     context.bot = AsyncMock()
+    context.bot_data = {}
     return query, update, context
 
 
@@ -53,6 +62,33 @@ def _unbound_window(name: str, pane_current_command: str | None = None) -> Magic
     if pane_current_command is not None:
         window.pane_current_command = pane_current_command
     return window
+
+
+def _protocol_adapter(tmp_path: Path, provider_name: str):
+    target = Target(
+        id="@5",
+        title="my-shell",
+        cwd="/workspace",
+        provider=provider_name,
+        conversation_id="",
+        transcript=None,
+        pane_id="%5",
+        pane_title=provider_name,
+        rows=24,
+        cols=80,
+        process_id=5,
+        approval_mode="normal",
+        status=Status("idle", "", "screen", utc_now()),
+        host="test-host",
+        foreground_argv=("bash",) if provider_name == "shell" else ("claude",),
+    )
+    backend = MagicMock()
+    backend.inspect = AsyncMock(return_value=target)
+    backend.prompt = AsyncMock(return_value=None)
+    backend.send_text = AsyncMock(return_value=True)
+    store = ProtocolStore(tmp_path / f"{provider_name}-delivery.sqlite3")
+    service = LocalSessionService(backend, store)
+    return TelegramSessionAdapter(service), backend, target, store
 
 
 async def _reset_flow_with_new_command(context: MagicMock) -> None:
@@ -90,6 +126,7 @@ def _bind_env(window: MagicMock | None = None) -> Iterator[_BindMocks]:
         patch(_FIND_WINDOW, new_callable=AsyncMock, return_value=window) as find_window,
         patch(f"{_MODULE}safe_edit") as edit,
         patch(f"{_MODULE}format_topic_name_for_mode"),
+        patch(f"{_MODULE}adapter_for", return_value=MagicMock()),
     ):
         router.resolve_chat_id.return_value = -100
         session.get_approval_mode.return_value = "normal"
@@ -145,6 +182,9 @@ class TestBindWindowCallback:
         with (
             _bind_env(_unbound_window("proj")),
             patch(
+                f"{_MODULE}adapter_for", return_value=MagicMock()
+            ) as mock_adapter_for,
+            patch(
                 f"{_MODULE}send_telegram_to_window",
                 new_callable=AsyncMock,
                 return_value=(True, "ok"),
@@ -152,7 +192,10 @@ class TestBindWindowCallback:
         ):
             await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
 
-        mock_send.assert_called_once_with(100, "@5", 42, "hello agent", -100999)
+        adapter = mock_adapter_for.return_value
+        mock_send.assert_called_once_with(
+            100, "@5", 42, "hello agent", -100999, adapter=adapter
+        )
         assert PENDING_THREAD_TEXT not in context.user_data
 
     @pytest.mark.parametrize(
@@ -303,6 +346,7 @@ class TestBindProviderDetection:
         if expects_prompt_setup:
             mock_ensure.assert_awaited_once()
             assert mock_ensure.call_args[0] == ("@5", "external_bind")
+            assert mock_ensure.call_args.kwargs["adapter"] is not None
         else:
             mock_ensure.assert_not_awaited()
 
@@ -327,6 +371,9 @@ class TestBindProviderDetection:
                 new_callable=AsyncMock,
             ),
             patch(
+                f"{_MODULE}adapter_for", return_value=MagicMock()
+            ) as mock_adapter_for,
+            patch(
                 f"{_MODULE}_forward_pending_text", new_callable=AsyncMock
             ) as mock_forward,
         ):
@@ -337,44 +384,278 @@ class TestBindProviderDetection:
         assert forward_args[1:] == (100, 42, "@5", "ls -la", "shell")
         assert forward_args[0].bot is context.bot
         assert mock_forward.call_args.kwargs == {
+            "adapter": mock_adapter_for.return_value,
             "is_existing_window": True,
+            "shell_exit_detected": False,
             "chat_id": -100999,
         }
 
+    async def test_tracked_agent_returned_to_shell_does_not_receive_pending_text(
+        self, tmp_path: Path
+    ) -> None:
+        query, update, context = _make_query_update_context(
+            user_data={
+                UNBOUND_WINDOWS_KEY: ["@5"],
+                PENDING_THREAD_ID: 42,
+                PENDING_THREAD_TEXT: "do not send to a shell",
+            }
+        )
+        adapter, backend, _, store = _protocol_adapter(tmp_path, "shell")
+        window = _unbound_window("former-agent", "node")
+        mux = MagicMock()
+        mux.find_window_by_id = AsyncMock(return_value=window)
+        mux.foreground = AsyncMock(
+            side_effect=[
+                ForegroundInfo(
+                    pid=1,
+                    pgid=101,
+                    argv=["node", "/opt/claude"],
+                    cwd="/workspace",
+                ),
+                ForegroundInfo(
+                    pid=2,
+                    pgid=102,
+                    argv=["bash"],
+                    cwd="/workspace",
+                ),
+            ]
+        )
+        claude_provider = MagicMock()
+        claude_provider.capabilities.chat_first_command_path = False
+        shell_provider = MagicMock()
+        shell_provider.capabilities.chat_first_command_path = True
+
+        def provider_for_window(_window_id: str, provider_name: str):
+            return {"claude": claude_provider, "shell": shell_provider}[provider_name]
+
+        with (
+            _bind_env(window),
+            patch(f"{_MODULE}window_query.get_window_provider", return_value="claude"),
+            patch(f"{_MODULE}get_initial_provider_name", return_value="claude"),
+            patch(
+                "ccgram.window_state_ports.identity_state.get_initial_provider_name",
+                return_value="claude",
+            ),
+            patch("ccgram.multiplexer.multiplexer", mux),
+            patch("ccgram.providers.process_detection._pgid_cache", {}),
+            patch(
+                "ccgram.providers.get_provider_for_window",
+                side_effect=provider_for_window,
+            ),
+            patch(
+                "ccgram.handlers.shell.shell_prompt_orchestrator.ensure_setup",
+                new_callable=AsyncMock,
+            ),
+            patch(f"{_MODULE}adapter_for", return_value=adapter),
+            patch(f"{_MODULE}safe_send", new_callable=AsyncMock) as mock_safe_send,
+        ):
+            await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
+
+        mux.foreground.assert_has_awaits([call("@5"), call("@5")])
+        assert mux.foreground.await_count == 2
+        backend.send_text.assert_not_awaited()
+        mock_safe_send.assert_awaited_once()
+        assert "recover the session" in mock_safe_send.call_args.args[2]
+        query.answer.assert_awaited_with("Bound")
+        store.close()
+
+    async def test_verified_shell_binding_submits_pending_text_once(
+        self, tmp_path: Path
+    ) -> None:
+        query, update, context = _make_query_update_context(
+            user_data={
+                UNBOUND_WINDOWS_KEY: ["@5"],
+                PENDING_THREAD_ID: 42,
+                PENDING_THREAD_TEXT: "ls -la",
+            }
+        )
+        adapter, backend, target, store = _protocol_adapter(tmp_path, "shell")
+        provider = MagicMock()
+        provider.capabilities.chat_first_command_path = True
+
+        with (
+            _bind_env(_unbound_window("my-shell", "bash")),
+            patch(
+                "ccgram.providers.detect_provider_from_pane",
+                new_callable=AsyncMock,
+                return_value="shell",
+            ),
+            patch(
+                f"{_MODULE}get_initial_provider_name",
+                return_value="",
+            ),
+            patch("ccgram.providers.get_provider_for_window", return_value=provider),
+            patch(
+                "ccgram.handlers.shell.shell_prompt_orchestrator.ensure_setup",
+                new_callable=AsyncMock,
+            ),
+            patch(f"{_MODULE}adapter_for", return_value=adapter),
+        ):
+            await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
+
+        backend.send_text.assert_awaited_once_with(
+            target, "ls -la", enter=True, raw=True
+        )
+        assert PENDING_THREAD_TEXT not in context.user_data
+        store.close()
+
+    async def test_agent_binding_keeps_message_action(self, tmp_path: Path) -> None:
+        query, update, context = _make_query_update_context(
+            user_data={
+                UNBOUND_WINDOWS_KEY: ["@5"],
+                PENDING_THREAD_ID: 42,
+                PENDING_THREAD_TEXT: "continue the task",
+            }
+        )
+        adapter, backend, target, store = _protocol_adapter(tmp_path, "claude")
+        provider = MagicMock()
+        provider.capabilities.chat_first_command_path = False
+
+        with (
+            _bind_env(_unbound_window("agent-window", "claude")),
+            patch(
+                "ccgram.providers.detect_provider_from_pane",
+                new_callable=AsyncMock,
+                return_value="claude",
+            ),
+            patch(f"{_MODULE}window_query.get_window_provider", return_value="claude"),
+            patch(f"{_MODULE}get_initial_provider_name", return_value="claude"),
+            patch(
+                "ccgram.window_state_ports.identity_state.get_initial_provider_name",
+                return_value="claude",
+            ),
+            patch("ccgram.providers.get_provider_for_window", return_value=provider),
+            patch(f"{_MODULE}adapter_for", return_value=adapter),
+        ):
+            await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
+
+        backend.send_text.assert_awaited_once_with(
+            target, "continue the task", enter=True
+        )
+        store.close()
+
+    @pytest.mark.parametrize(
+        ("current_provider", "initial_provider", "submits"),
+        [
+            ("claude", "shell", True),
+            ("shell", "", False),
+            ("mystery", "mystery", False),
+            (None, "", True),
+        ],
+        ids=[
+            "explicit-shell-origin",
+            "legacy-shell-state",
+            "unknown-provider",
+            "untracked-verified-shell",
+        ],
+    )
+    async def test_shell_exit_policy_uses_captured_origin(
+        self,
+        tmp_path: Path,
+        current_provider: str | None,
+        initial_provider: str,
+        submits: bool,
+    ) -> None:
+        query, update, context = _make_query_update_context(
+            user_data={
+                UNBOUND_WINDOWS_KEY: ["@5"],
+                PENDING_THREAD_ID: 42,
+                PENDING_THREAD_TEXT: "ls -la",
+            }
+        )
+        adapter, backend, target, store = _protocol_adapter(tmp_path, "shell")
+        provider = MagicMock()
+        provider.capabilities.chat_first_command_path = True
+
+        with (
+            _bind_env(_unbound_window("my-shell", "bash")),
+            patch(
+                f"{_MODULE}window_query.get_window_provider",
+                return_value=current_provider,
+            ),
+            patch(
+                f"{_MODULE}get_initial_provider_name",
+                return_value=initial_provider,
+            ),
+            patch(
+                "ccgram.providers.detect_provider_from_pane",
+                new_callable=AsyncMock,
+                return_value="shell",
+            ),
+            patch("ccgram.providers.get_provider_for_window", return_value=provider),
+            patch(
+                "ccgram.handlers.shell.shell_prompt_orchestrator.ensure_setup",
+                new_callable=AsyncMock,
+            ),
+            patch(f"{_MODULE}adapter_for", return_value=adapter),
+            patch(f"{_MODULE}safe_send", new_callable=AsyncMock) as mock_safe_send,
+        ):
+            await handle_window_callback(query, 100, f"{CB_WIN_BIND}0", update, context)
+
+        if submits:
+            backend.send_text.assert_awaited_once_with(
+                target, "ls -la", enter=True, raw=True
+            )
+            mock_safe_send.assert_not_awaited()
+        else:
+            backend.send_text.assert_not_awaited()
+            mock_safe_send.assert_awaited_once()
+            assert "recover the session" in mock_safe_send.call_args.args[2]
+        store.close()
+
 
 class TestForwardPendingText:
-    async def test_existing_shell_window_sends_raw(self) -> None:
-        bot = AsyncMock(spec=Bot)
-        with (
-            patch(f"{_MODULE}session_manager"),
-            patch(
-                "ccgram.handlers.shell.shell_commands.handle_shell_message",
-                new_callable=AsyncMock,
-            ) as mock_shell,
-            patch(
-                f"{_MODULE}send_telegram_to_window",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ) as mock_send,
-        ):
-            await _forward_pending_text(
-                bot, 1, 42, "@5", "list files", "shell", is_existing_window=True
-            )
-
-        mock_shell.assert_not_awaited()
-        mock_send.assert_called_once_with(1, "@5", 42, "list files", None)
-
     async def test_new_shell_window_routes_through_handler(self) -> None:
         bot = AsyncMock(spec=Bot)
+        adapter = MagicMock()
         with patch(
             "ccgram.handlers.shell.shell_commands.handle_shell_message",
             new_callable=AsyncMock,
         ) as mock_shell:
             await _forward_pending_text(
-                bot, 1, 42, "@5", "list files", "shell", is_existing_window=False
+                bot,
+                1,
+                42,
+                "@5",
+                "list files",
+                "shell",
+                adapter=adapter,
+                is_existing_window=False,
             )
-
         mock_shell.assert_awaited_once()
         args = mock_shell.call_args.args
         assert args[1:] == (1, 42, "@5", "list files")
         assert args[0] is bot
+        assert mock_shell.call_args.kwargs["adapter"] is adapter
+
+
+@pytest.mark.parametrize(
+    "binding_change",
+    [
+        {"provider": "claude", "foreground_argv": ("claude",)},
+        {"process_id": 99},
+        {"pane_id": "%6"},
+    ],
+    ids=["provider", "process", "active-pane"],
+)
+async def test_verified_shell_input_rejects_binding_change_after_verification(
+    tmp_path: Path, binding_change: dict[str, object]
+) -> None:
+    adapter, backend, target, store = _protocol_adapter(tmp_path, "shell")
+
+    def inject_then_change_binding(*args):
+        backend.inspect = AsyncMock(return_value=replace(target, **binding_change))
+        return object()
+
+    with patch(
+        "ccgram.handlers.telegram_origin.remember_telegram_injection",
+        side_effect=inject_then_change_binding,
+    ):
+        success, message = await _send_verified_shell_input(
+            100, "@5", 42, "ls -la", -100999, adapter
+        )
+
+    assert not success
+    assert message == "Session binding changed"
+    backend.send_text.assert_not_awaited()
+    store.close()

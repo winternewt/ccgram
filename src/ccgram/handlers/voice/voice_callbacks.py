@@ -14,6 +14,7 @@ import structlog
 from telegram import CallbackQuery, Message, Update
 from telegram.error import TelegramError
 from ...providers import get_provider_for_window
+from ...session_protocol.telegram import adapter_for
 from ...telegram_client import PTBTelegramClient
 from ...window_query import get_window_provider
 from ..telegram_origin import send_telegram_to_window
@@ -75,6 +76,8 @@ async def send_transcribed_text(
     window_id: str,
     text: str,
     chat_id: int,
+    *,
+    adapter,
 ) -> tuple[bool, str | None]:
     """Send transcribed text through the same provider-aware path as confirmation."""
     provider = get_provider_for_window(
@@ -85,13 +88,22 @@ async def send_transcribed_text(
         from ..shell.shell_commands import handle_shell_message
 
         try:
-            await handle_shell_message(client, user_id, thread_id, window_id, text)
+            await handle_shell_message(
+                client,
+                user_id,
+                thread_id,
+                window_id,
+                text,
+                adapter=adapter,
+            )
         except (OSError, TelegramError) as exc:
             logger.warning("Shell message handling failed: %s", exc)
             return False, "Failed to send"
         return True, None
 
-    return await send_telegram_to_window(user_id, window_id, thread_id, text, chat_id)
+    return await send_telegram_to_window(
+        user_id, window_id, thread_id, text, chat_id, adapter=adapter
+    )
 
 
 async def _handle_send(
@@ -124,7 +136,13 @@ async def _handle_send(
     await react(client, msg.chat.id, message_id, REACT_SEEN)
 
     success, err = await send_transcribed_text(
-        client, user_id, thread_id, window_id, pending_text, msg.chat.id
+        client,
+        user_id,
+        thread_id,
+        window_id,
+        pending_text,
+        msg.chat.id,
+        adapter=adapter_for(context.bot_data),
     )
 
     if success:

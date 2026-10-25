@@ -9,11 +9,14 @@ activity-based idle/done logic stays in control.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
+from ccgram.handlers.polling.polling_coordinator import _tick_bound_windows
 from ccgram.handlers.polling.window_tick.observe import _native_agent_status
 from ccgram.multiplexer import agent_status_cache
 from ccgram.multiplexer.base import AgentStatus
@@ -137,3 +140,83 @@ async def test_cold_cache_falls_back_to_subprocess() -> None:
     assert status is not None
     assert status.raw_text == "working"
     mux.agent_status.assert_awaited_once()  # cold cache → one subprocess call
+
+
+@pytest.mark.parametrize("event_stream", [True, False])
+async def test_probe_error_fails_soft_logs_warning_and_recovers(
+    event_stream: bool,
+) -> None:
+    mux = _fake_mux(native=True, status=None)
+    mux.capabilities.supports_event_stream = event_stream
+    mux.agent_status.side_effect = [
+        RuntimeError("socket died"),
+        RuntimeError("socket died"),
+        AgentStatus(state="working", custom_status="recovered"),
+    ]
+    window_id = "w2:t1:event-stream" if event_stream else "w2:t1:probe-only"
+
+    with (
+        capture_logs() as logs,
+        patch("ccgram.handlers.polling.window_tick.observe.tmux_manager", mux),
+    ):
+        assert await _native_agent_status(window_id) is None
+        assert await _native_agent_status(window_id) is None
+        status = await _native_agent_status(window_id)
+
+    assert status is not None
+    assert status.raw_text == "recovered"
+    assert mux.agent_status.await_count == 3
+    warnings = [entry for entry in logs if entry["log_level"] == "warning"]
+    assert len(warnings) == 1
+    assert "socket died" in warnings[0]["event"]
+
+
+@pytest.mark.parametrize("event_stream", [True, False])
+async def test_probe_cancellation_propagates(event_stream: bool) -> None:
+    mux = _fake_mux(native=True, status=None)
+    mux.capabilities.supports_event_stream = event_stream
+    mux.agent_status.side_effect = asyncio.CancelledError
+
+    with (
+        patch("ccgram.handlers.polling.window_tick.observe.tmux_manager", mux),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await _native_agent_status("w2:t1")
+
+
+@pytest.mark.parametrize("event_stream", [True, False])
+async def test_probe_failure_does_not_skip_later_window_tick(
+    event_stream: bool,
+) -> None:
+    mux = _fake_mux(native=True, status=None)
+    mux.capabilities.supports_event_stream = event_stream
+    mux.agent_status.side_effect = [
+        RuntimeError("probe failed"),
+        AgentStatus(state="working"),
+    ]
+    window_ids = [
+        f"probe-error-{event_stream}-first",
+        f"probe-error-{event_stream}-second",
+    ]
+    visited: list[str] = []
+
+    async def tick(_bot, _user_id, _thread_id, window_id, _window, **_kwargs):
+        visited.append(window_id)
+        await _native_agent_status(window_id)
+
+    with (
+        patch("ccgram.handlers.polling.window_tick.observe.tmux_manager", mux),
+        patch("ccgram.handlers.polling.polling_coordinator.thread_router") as router,
+        patch(
+            "ccgram.handlers.polling.polling_coordinator.window_tick.tick_window",
+            new_callable=AsyncMock,
+        ) as tick_window,
+    ):
+        router.iter_thread_bindings_with_chat.return_value = [
+            (1, -100, index, window_id) for index, window_id in enumerate(window_ids)
+        ]
+        tick_window.side_effect = tick
+        await _tick_bound_windows(AsyncMock(), {}, adapter=MagicMock())
+
+    assert visited == window_ids
+    assert mux.agent_status.await_count == 2

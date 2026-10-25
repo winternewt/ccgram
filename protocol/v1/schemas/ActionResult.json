@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ccgram.dev/protocol/v1/schemas/ActionResult.json",
+  "title": "ActionResult",
+  "type": "object",
+  "properties": {
+    "actionId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "sent",
+        "rejected",
+        "unknown"
+      ]
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "Error.json#/properties/error"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "data": {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "actionId",
+    "outcome",
+    "error"
+  ],
+  "additionalProperties": true
+}

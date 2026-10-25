@@ -1,6 +1,9 @@
 import subprocess
+from collections.abc import Callable, Generator
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,7 +27,18 @@ from ccgram.handlers.user_state import (
     PENDING_WORKTREE_PATH,
     PENDING_WORKTREE_REPO,
 )
+from ccgram.multiplexer.base import Multiplexer
 from ccgram.session import SessionManager
+from ccgram.session_protocol.backend import (
+    CreationOptions,
+    MultiplexerSessionBackend,
+    Prompt,
+    SessionBackend,
+    Target,
+)
+from ccgram.session_protocol.models import ProtocolError, Status, utc_now
+from ccgram.session_protocol.service import LocalSessionService
+from ccgram.session_protocol.store import ProtocolStore
 from ccgram.window_state_store import window_store
 
 pytestmark = pytest.mark.integration
@@ -32,6 +46,136 @@ pytestmark = pytest.mark.integration
 _MOD_DC = "ccgram.handlers.topics.directory_callbacks"
 _MOD_WC = "ccgram.handlers.topics.workspace_callbacks"
 _MOD_WL = "ccgram.handlers.topics.window_launch_service"
+
+
+class _TopicCreationBackend:
+    def __init__(self, failure: ProtocolError | None = None) -> None:
+        self.target = Target(
+            id="@7",
+            title="repo",
+            cwd="/workspace",
+            provider="claude",
+            conversation_id="",
+            transcript=None,
+            pane_id="%7",
+            pane_title="claude",
+            rows=24,
+            cols=80,
+            process_id=7,
+            approval_mode="normal",
+            status=Status("idle", "", "screen", utc_now()),
+            host="test-host",
+            foreground_argv=("claude",),
+        )
+        self.failure = failure
+        self.create_calls: list[tuple[dict[str, Any], CreationOptions | None]] = []
+
+    async def targets(self) -> list[Target]:
+        return [self.target]
+
+    async def inspect(self, target_id: str) -> Target:
+        if target_id != self.target.id:
+            raise ProtocolError(404, "not_found", "Session target not found")
+        return self.target
+
+    async def prompt(self, target: Target) -> Prompt | None:
+        return None
+
+    async def terminal(self, target: Target, pane: str) -> dict[str, Any]:
+        raise AssertionError("terminal is unused in this test")
+
+    async def send_text(
+        self, target: Target, text: str, *, enter: bool, raw: bool | None = None
+    ) -> bool:
+        raise AssertionError("send_text is unused in this test")
+
+    async def send_key(self, target: Target, key: str) -> bool:
+        raise AssertionError("send_key is unused in this test")
+
+    async def send_followup(self, target: Target, text: str) -> bool:
+        raise AssertionError("send_followup is unused in this test")
+
+    async def select_pane(self, target: Target, pane_id: str) -> Target:
+        raise AssertionError("select_pane is unused in this test")
+
+    async def split(self, target: Target) -> str | None:
+        raise AssertionError("split is unused in this test")
+
+    async def close(self, target: Target) -> bool:
+        raise AssertionError("close is unused in this test")
+
+    async def rename(self, target: Target, title: str) -> bool:
+        raise AssertionError("rename is unused in this test")
+
+    async def commands(self, target: Target) -> list[dict[str, str]]:
+        raise AssertionError("commands are unused in this test")
+
+    async def create(
+        self,
+        data: dict[str, Any],
+        *,
+        trusted_options: CreationOptions | None = None,
+    ) -> Target:
+        self.create_calls.append((data, trusted_options))
+        if self.failure is not None:
+            raise self.failure
+        self.target = replace(
+            self.target,
+            title=Path(data["directory"]).name,
+            cwd=data["directory"],
+            provider=data["provider"],
+        )
+        return self.target
+
+    async def resume(self, target: Target, conversation_id: str) -> bool:
+        raise AssertionError("resume is unused in this test")
+
+
+class _HerdrCreationBackend(MultiplexerSessionBackend):
+    def __init__(
+        self, mux: MagicMock, target_id: str, worktree_path: str, command_dir: str
+    ) -> None:
+        super().__init__(cast(Multiplexer, mux), command_dir)
+        self.test_target = Target(
+            id=target_id,
+            title="ccg-feature",
+            cwd=worktree_path,
+            provider="claude",
+            conversation_id="",
+            transcript=None,
+            pane_id="%5",
+            pane_title="claude",
+            rows=24,
+            cols=80,
+            process_id=5,
+            approval_mode="normal",
+            status=Status("idle", "", "screen", utc_now()),
+            host="test-host",
+            foreground_argv=("claude",),
+        )
+
+    async def inspect(self, target_id: str) -> Target:
+        if target_id != self.test_target.id:
+            raise ProtocolError(404, "not_found", "Session target not found")
+        return self.test_target
+
+
+@pytest.fixture
+def attach_protocol_service(
+    tmp_path: Path,
+) -> Generator[Callable[[MagicMock, SessionBackend], ProtocolStore], None, None]:
+    stores: list[ProtocolStore] = []
+
+    def attach(context: MagicMock, backend: SessionBackend) -> ProtocolStore:
+        store = ProtocolStore(tmp_path / f"protocol-{len(stores)}.sqlite3")
+        stores.append(store)
+        context.bot_data = {"session_service": LocalSessionService(backend, store)}
+        return store
+
+    yield attach
+
+    for store in stores:
+        store.close()
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -130,7 +274,9 @@ async def test_use_current_branch_skips_to_provider_picker(
 
 
 async def test_new_worktree_creates_and_persists_to_window_state(
-    session_manager: SessionManager, git_repo: Path
+    session_manager: SessionManager,
+    git_repo: Path,
+    attach_protocol_service: Callable[[MagicMock, SessionBackend], ProtocolStore],
 ) -> None:
     user_data = {
         PENDING_WORKTREE_REPO: str(git_repo),
@@ -147,18 +293,14 @@ async def test_new_worktree_creates_and_persists_to_window_state(
     assert (worktree_path / "file.txt").exists()
     assert user_data[BROWSE_PATH_KEY] == str(worktree_path)
 
+    backend = _TopicCreationBackend()
+    attach_protocol_service(context, backend)
+
     with (
-        patch("ccgram.providers.resolve_launch_command", return_value="claude"),
         patch(f"{_MOD_WL}.tmux_manager") as mock_tmux,
         patch(f"{_MOD_WL}.provider_registry") as mock_registry,
     ):
         mock_tmux.capabilities.native_worktrees = False
-        mock_tmux.create_window = AsyncMock(
-            return_value=(True, "Created window 'repo'", "repo", "@7")
-        )
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=SimpleNamespace(pane_current_command="claude")
-        )
         mock_tmux.stamp_pane_title = AsyncMock()
         mock_registry.is_valid.return_value = True
         mock_registry.get.return_value = _agent_provider()
@@ -176,6 +318,10 @@ async def test_new_worktree_creates_and_persists_to_window_state(
             ),
         )
 
+    assert backend.create_calls[0][0] == {
+        "provider": "claude",
+        "directory": str(worktree_path),
+    }
     state = window_store.window_states["@7"]
     assert state.worktree_path == str(worktree_path)
     assert state.worktree_branch == branch
@@ -183,7 +329,9 @@ async def test_new_worktree_creates_and_persists_to_window_state(
 
 
 async def test_create_window_failure_clears_worktree_state(
-    session_manager: SessionManager, git_repo: Path
+    session_manager: SessionManager,
+    git_repo: Path,
+    attach_protocol_service: Callable[[MagicMock, SessionBackend], ProtocolStore],
 ) -> None:
     user_data = {
         PENDING_WORKTREE_REPO: str(git_repo),
@@ -195,15 +343,15 @@ async def test_create_window_failure_clears_worktree_state(
     await _handle_wt_confirm(_make_query(), context)
 
     assert user_data[PENDING_WORKTREE_CREATING] is True
+    backend = _TopicCreationBackend(
+        failure=ProtocolError(400, "creation_failed", "tmux refused")
+    )
+    attach_protocol_service(context, backend)
 
     with (
-        patch("ccgram.providers.resolve_launch_command", return_value="claude"),
         patch(f"{_MOD_WL}.tmux_manager") as mock_tmux,
     ):
         mock_tmux.capabilities.native_worktrees = False
-        mock_tmux.create_window = AsyncMock(
-            return_value=(False, "tmux refused", None, None)
-        )
         await _create_window_and_bind(
             _make_query(),
             context,
@@ -227,7 +375,9 @@ async def test_create_window_failure_clears_worktree_state(
 
 
 async def test_herdr_delegates_worktree_creation(
-    session_manager: SessionManager, git_repo: Path
+    session_manager: SessionManager,
+    git_repo: Path,
+    attach_protocol_service: Callable[[MagicMock, SessionBackend], ProtocolStore],
 ) -> None:
     # native_worktrees backend: _create_window_and_bind routes through
     # create_worktree_window (one herdr `worktree create`), never create_window.
@@ -239,21 +389,25 @@ async def test_herdr_delegates_worktree_creation(
         PENDING_THREAD_ID: 42,
     }
     context = _make_context(user_data)
+    mock_mux = MagicMock()
+    mock_mux.capabilities.native_worktrees = True
+    backend = _HerdrCreationBackend(mock_mux, "w5:t1", worktree_path, "claude")
+    attach_protocol_service(context, backend)
 
     with (
-        patch("ccgram.providers.resolve_launch_command", return_value="claude"),
+        patch(
+            "ccgram.session_protocol.backend.resolve_launch_command",
+            return_value="claude",
+        ),
         patch(f"{_MOD_WL}.thread_router"),
-        patch(f"{_MOD_WL}.tmux_manager") as mock_tmux,
+        patch(f"{_MOD_WL}.tmux_manager", mock_mux),
         patch(f"{_MOD_WL}.provider_registry") as mock_registry,
     ):
-        mock_tmux.capabilities.native_worktrees = True
-        mock_tmux.create_worktree_window = AsyncMock(
+        mock_mux.create_worktree_window = AsyncMock(
             return_value=(True, "Created herdr worktree", "ccg-feature", "w5:t1")
         )
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=SimpleNamespace(pane_current_command="claude")
-        )
-        mock_tmux.stamp_pane_title = AsyncMock()
+        mock_mux.capture_pane_by_id = AsyncMock(return_value="")
+        mock_mux.stamp_pane_title = AsyncMock()
         mock_registry.is_valid.return_value = True
         mock_registry.get.return_value = _agent_provider()
 
@@ -271,13 +425,12 @@ async def test_herdr_delegates_worktree_creation(
         )
 
     # Delegated to herdr; the git create_window path is never used.
-    mock_tmux.create_worktree_window.assert_awaited_once()
-    call = mock_tmux.create_worktree_window.await_args
+    mock_mux.create_worktree_window.assert_awaited_once()
+    call = mock_mux.create_worktree_window.await_args
     assert call is not None
     assert call.args == (str(git_repo), worktree_path, "ccg/feature")
-    assert call.kwargs["window_name"] == "ccg-feature"
     assert call.kwargs["launch_command"] == "claude"
-    mock_tmux.create_window.assert_not_called()
+    mock_mux.create_window.assert_not_called()
 
     state = window_store.window_states["w5:t1"]
     assert state.worktree_path == worktree_path

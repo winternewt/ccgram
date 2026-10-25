@@ -94,10 +94,11 @@ async def test_monitor_does_not_commit_when_queue_busy(tmp_path, monkeypatch):
         f.write(line)
     os.utime(session_file)
     monitor.set_message_callback(AsyncMock(return_value=None))
-    messages = await monitor.check_for_updates(current_map)
-    pending = monitor._register_delivery_receipts(messages)
-    for message, receipt in pending:
-        await monitor._dispatch_message_with_receipt(message, receipt)
+    await monitor.check_for_updates(current_map)
+    batches = monitor._transcript_reader.drain_batches()
+    pending = monitor._register_delivery_receipts(batches)
+    for batch, consumer_name, receipt in pending:
+        await monitor._dispatch_message_with_receipt(batch, receipt, consumer_name)
 
     tracked = monitor.state.get_session("s1")
     assert tracked is not None

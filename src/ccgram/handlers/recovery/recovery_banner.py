@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -31,7 +32,7 @@ from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, 
 from telegram.error import TelegramError
 
 from ... import window_query
-from ...providers import get_provider, get_provider_for_window, resolve_launch_command
+from ...providers import get_provider, get_provider_for_window
 from ...session import session_manager
 from ...session_map import session_map_sync
 from ...telegram_client import PTBTelegramClient
@@ -39,6 +40,8 @@ from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
 from ...multiplexer.base import canonical_window_id
 from ..telegram_origin import send_telegram_to_window
+from ...session_protocol.telegram import adapter_for
+from ...session_protocol.models import ProtocolError
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..callback_data import (
     CB_RECOVERY_BACK,
@@ -426,7 +429,7 @@ async def _finish_failed_provisioning(  # noqa: C901
         if target_id is None:
             return False
         try:
-            absent = await tmux_manager.kill_window(target_id)
+            absent, _ = await adapter_for(context.bot_data).close(target_id)
         except BaseException:  # noqa: BLE001
             return False
         if absent:
@@ -448,7 +451,9 @@ async def _finish_failed_provisioning(  # noqa: C901
         pass
     else:
         try:
-            target_confirmed_absent = await tmux_manager.kill_window(target_id)
+            target_confirmed_absent, _ = await adapter_for(context.bot_data).close(
+                target_id
+            )
         except BaseException:  # noqa: BLE001
             _mark_provisioning_uncertain(claim_id)
             return False
@@ -479,7 +484,8 @@ async def _create_and_bind_window(  # noqa: C901, PLR0912, PLR0915
     cwd: str,
     context: ContextTypes.DEFAULT_TYPE,
     *,
-    agent_args: str = "",
+    resume_id: str | None = None,
+    continue_session: bool = False,
     success_label: str = "Session started.",
     old_window_id: str = "",
     provider_name: str = "",
@@ -557,24 +563,39 @@ async def _create_and_bind_window(  # noqa: C901, PLR0912, PLR0915
             provider_name=provider_name
             or (old_view.provider_name if old_view else None),
         )
-        approval_mode = old_view.approval_mode if old_view else "normal"
+        approval_mode: Literal["normal", "yolo"] = (
+            "yolo" if old_view and old_view.approval_mode == "yolo" else "normal"
+        )
     elif provider_name:
         provider = get_provider_for_window("", provider_name=provider_name)
         approval_mode = "normal"
     else:
         provider = get_provider()
         approval_mode = "normal"
-    launch_command = resolve_launch_command(
-        provider.capabilities.name, approval_mode=approval_mode
-    )
-
     creation_was_cancelled = False
+    creation_definitive_failure = False
     try:
-        creation, creation_was_cancelled = await _await_creation_result(
-            tmux_manager.create_window(
-                cwd, agent_args=agent_args, launch_command=launch_command
+        created, creation_was_cancelled = await _await_creation_result(
+            adapter_for(context.bot_data).create(
+                {"provider": provider.capabilities.name, "directory": cwd},
+                approval_mode=approval_mode,
+                resume_id=resume_id,
+                continue_session=continue_session,
             )
         )
+        creation = (
+            True,
+            f"Created session '{created.title}'",
+            created.title,
+            created.target_id,
+        )
+    except ProtocolError as exc:
+        if exc.status < HTTPStatus.INTERNAL_SERVER_ERROR:
+            creation_definitive_failure = True
+            creation = (False, exc.message, "", "")
+        else:
+            _mark_provisioning_uncertain(claim_id)
+            raise
     except BaseException:  # noqa: BLE001
         _mark_provisioning_uncertain(claim_id)
         raise
@@ -604,7 +625,7 @@ async def _create_and_bind_window(  # noqa: C901, PLR0912, PLR0915
                 failure_message=message,
                 preserve_topic=bool(old_window_id),
             )
-        elif _is_definitive_create_failure(message):
+        elif creation_definitive_failure or _is_definitive_create_failure(message):
             await _finish_failed_provisioning(
                 claim_id=claim_id,
                 target_id=None,
@@ -614,6 +635,7 @@ async def _create_and_bind_window(  # noqa: C901, PLR0912, PLR0915
                 context=context,
                 failure_message=message,
                 preserve_topic=bool(old_window_id),
+                target_confirmed_absent=creation_definitive_failure,
             )
         else:
             _mark_provisioning_uncertain(claim_id)
@@ -767,7 +789,12 @@ async def _create_and_bind_window(  # noqa: C901, PLR0912, PLR0915
     _clear_recovery_state(context.user_data)
     if pending_text:
         send_ok, send_msg = await send_telegram_to_window(
-            user_id, created_wid, thread_id, pending_text, chat.id if chat else None
+            user_id,
+            created_wid,
+            thread_id,
+            pending_text,
+            chat.id if chat else None,
+            adapter=adapter_for(context.bot_data),
         )
         if not send_ok:
             logger.warning(
@@ -940,14 +967,13 @@ async def _handle_continue(
         await _send_empty_state(query, old_wid, cwd)
         return
 
-    launch_args = provider.make_launch_args(use_continue=True)
     await _create_and_bind_window(
         query,
         user_id,
         thread_id,
         cwd,
         context,
-        agent_args=launch_args,
+        continue_session=True,
         success_label="Continuing previous session.",
         old_window_id=old_wid,
     )

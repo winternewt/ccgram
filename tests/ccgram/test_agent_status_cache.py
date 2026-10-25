@@ -459,3 +459,149 @@ async def test_invalidation_during_cold_probe_discards_its_result(
     assert await pending is None
     assert agent_status_cache.get_status("w2:t1") is None
     assert "w2:t1" not in agent_status_cache._window_generations
+
+
+async def test_probe_only_mode_does_not_cache_positive_results() -> None:
+    calls = 0
+    working = AgentStatus("working", "codex")
+    idle = AgentStatus("idle", "codex")
+
+    async def probe() -> AgentStatus:
+        nonlocal calls
+        calls += 1
+        return working if calls == 1 else idle
+
+    get_status = agent_status_cache.get_status_or_probe
+    assert await get_status("probe-only", probe, cache_positive=False) == working
+    assert await get_status("probe-only", probe, cache_positive=False) == idle
+    assert calls == 2
+    assert agent_status_cache.get_status("probe-only") is None
+
+
+async def test_probe_only_mode_uses_five_second_negative_ttl(monkeypatch) -> None:
+    now = [0.0]
+    monkeypatch.setattr(agent_status_cache, "_clock", lambda: now[0])
+    calls = 0
+
+    async def probe() -> AgentStatus | None:
+        nonlocal calls
+        calls += 1
+        return None
+
+    get_status = agent_status_cache.get_status_or_probe
+    assert await get_status("probe-only-negative", probe, cache_positive=False) is None
+    now[0] = 4.999
+    assert await get_status("probe-only-negative", probe, cache_positive=False) is None
+    assert calls == 1
+    now[0] = 5.0
+    assert await get_status("probe-only-negative", probe, cache_positive=False) is None
+    assert calls == 2
+
+
+async def test_probe_only_mode_coalesces_positive_waiters() -> None:
+    probe_started = asyncio.Event()
+    release_probe = asyncio.Event()
+    second_waiter_started = asyncio.Event()
+    calls = 0
+    working = AgentStatus("working", "codex")
+
+    async def probe() -> AgentStatus:
+        nonlocal calls
+        calls += 1
+        probe_started.set()
+        await release_probe.wait()
+        return working
+
+    first = asyncio.create_task(
+        agent_status_cache.get_status_or_probe(
+            "probe-only-coalesced", probe, cache_positive=False
+        )
+    )
+    await probe_started.wait()
+
+    async def second_waiter() -> AgentStatus | None:
+        second_waiter_started.set()
+        return await agent_status_cache.get_status_or_probe(
+            "probe-only-coalesced",
+            probe,
+            cache_positive=False,
+        )
+
+    second = asyncio.create_task(second_waiter())
+    await second_waiter_started.wait()
+    release_probe.set()
+
+    assert await asyncio.gather(first, second) == [working, working]
+    assert calls == 1
+    assert agent_status_cache.get_status("probe-only-coalesced") is None
+
+
+@pytest.mark.parametrize("invalidation", ["push", "clear", "reset"])
+async def test_probe_only_mode_respects_invalidation_during_probe(
+    invalidation: str,
+) -> None:
+    probe_started = asyncio.Event()
+    release_probe = asyncio.Event()
+    stale = AgentStatus("idle", "codex")
+    pushed = AgentStatus("working", "codex")
+    window_id = f"probe-only-{invalidation}"
+
+    async def probe() -> AgentStatus:
+        probe_started.set()
+        await release_probe.wait()
+        return stale
+
+    pending = asyncio.create_task(
+        agent_status_cache.get_status_or_probe(window_id, probe, cache_positive=False)
+    )
+    await probe_started.wait()
+    if invalidation == "push":
+        agent_status_cache.set_status(window_id, pushed)
+    elif invalidation == "clear":
+        agent_status_cache.clear(window_id)
+    else:
+        agent_status_cache.reset()
+    release_probe.set()
+
+    assert await pending == (pushed if invalidation == "push" else None)
+    assert agent_status_cache.get_status(window_id) == (
+        pushed if invalidation == "push" else None
+    )
+
+
+async def test_probe_only_mode_cancellation_propagates(monkeypatch) -> None:
+    probe_started = asyncio.Event()
+    release_probe = asyncio.Event()
+    generation_released = asyncio.Event()
+    window_id = "probe-only-cancel"
+    release_generation = agent_status_cache._release_generation
+
+    def signal_generation_release(
+        released_window: str, state: agent_status_cache._WindowProbeState
+    ) -> None:
+        release_generation(released_window, state)
+        if (
+            released_window == window_id
+            and window_id not in agent_status_cache._window_generations
+        ):
+            generation_released.set()
+
+    monkeypatch.setattr(
+        agent_status_cache, "_release_generation", signal_generation_release
+    )
+
+    async def probe() -> AgentStatus:
+        probe_started.set()
+        await release_probe.wait()
+        return AgentStatus("working")
+
+    pending = asyncio.create_task(
+        agent_status_cache.get_status_or_probe(window_id, probe, cache_positive=False)
+    )
+    await probe_started.wait()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    release_probe.set()
+    await generation_released.wait()
+    assert agent_status_cache.get_status(window_id) is None

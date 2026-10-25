@@ -15,7 +15,7 @@ Match changed modules to tests, then run the full suite.
 
 Session/state: `tests/ccgram/test_session.py`, `tests/ccgram/test_window_state_store.py`.
 
-Monitor/parsing: `tests/ccgram/test_session_monitor.py`, `tests/ccgram/test_transcript_parser.py`.
+Monitor/parsing: `tests/ccgram/test_session_monitor.py`, `tests/ccgram/test_claude_transcripts.py`, `tests/ccgram/session_protocol/`.
 
 Handlers/UI: `tests/ccgram/handlers/text/test_text_handler.py`, `tests/ccgram/handlers/polling/test_polling_coordinator.py`, `tests/ccgram/handlers/polling/test_polling_strategies.py`, `tests/ccgram/handlers/test_bot_callbacks.py`.
 

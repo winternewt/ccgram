@@ -135,80 +135,69 @@ async def test_legacy_shell_without_origin_fails_closed() -> None:
 
 @pytest.mark.asyncio
 async def test_origin_aware_send_blocks_agent_exit() -> None:
+    adapter = MagicMock(send_text=AsyncMock())
     with (
         patch(
             "ccgram.handlers.telegram_origin.agent_origin_returned_to_shell",
             new_callable=AsyncMock,
             return_value=True,
         ),
-        patch(
-            "ccgram.handlers.telegram_origin.send_to_window", new_callable=AsyncMock
-        ) as mock_send,
     ):
-        result = await send_telegram_to_window(1, "@1", 42, "hello")
+        result = await send_telegram_to_window(1, "@1", 42, "hello", adapter=adapter)
 
     assert result == (
         False,
         "Agent exited or shell access is not confirmed; recover the session or run "
         "/agent shell before sending input.",
     )
-    mock_send.assert_not_awaited()
+    adapter.send_text.assert_not_awaited()
     assert consume_telegram_injection(1, "@1", 42, "hello") is False
 
 
 @pytest.mark.asyncio
 async def test_origin_aware_send_reserves_before_terminal_injection() -> None:
     async def send_after_reservation(
-        window_id: str, text: str, *, raw: bool = False
+        window_id: str, text: str, **_kwargs
     ) -> tuple[bool, str]:
         assert consume_telegram_injection(1, window_id, 42, text) is True
         return True, "ok"
 
-    with patch(
-        "ccgram.handlers.telegram_origin.send_to_window",
-        AsyncMock(side_effect=send_after_reservation),
-    ):
-        assert await send_telegram_to_window(1, "@1", 42, "hello") == (True, "ok")
+    adapter = MagicMock(send_text=AsyncMock(side_effect=send_after_reservation))
+    assert await send_telegram_to_window(1, "@1", 42, "hello", adapter=adapter) == (
+        True,
+        "ok",
+    )
 
 
 @pytest.mark.asyncio
 async def test_origin_aware_send_rolls_back_on_false_result() -> None:
-    with patch(
-        "ccgram.handlers.telegram_origin.send_to_window",
-        AsyncMock(return_value=(False, "window gone")),
-    ):
-        assert await send_telegram_to_window(1, "@1", 42, "hello") == (
-            False,
-            "window gone",
-        )
+    adapter = MagicMock(send_text=AsyncMock(return_value=(False, "window gone")))
+    assert await send_telegram_to_window(1, "@1", 42, "hello", adapter=adapter) == (
+        False,
+        "window gone",
+    )
 
     assert consume_telegram_injection(1, "@1", 42, "hello") is False
 
 
 @pytest.mark.asyncio
 async def test_origin_aware_send_rolls_back_on_cancellation() -> None:
+    adapter = MagicMock(send_text=AsyncMock(side_effect=asyncio.CancelledError))
     with (
-        patch(
-            "ccgram.handlers.telegram_origin.send_to_window",
-            AsyncMock(side_effect=asyncio.CancelledError),
-        ),
         pytest.raises(asyncio.CancelledError),
     ):
-        await send_telegram_to_window(1, "@1", 42, "hello")
+        await send_telegram_to_window(1, "@1", 42, "hello", adapter=adapter)
 
     assert consume_telegram_injection(1, "@1", 42, "hello") is False
 
 
 @pytest.mark.asyncio
 async def test_origin_aware_send_rolls_back_on_exception() -> None:
+    adapter = MagicMock(send_text=AsyncMock(side_effect=RuntimeError("send failed")))
     with (
-        patch(
-            "ccgram.handlers.telegram_origin.send_to_window",
-            AsyncMock(side_effect=RuntimeError("send failed")),
-        ),
         pytest.raises(RuntimeError, match="send failed"),
     ):
-        await send_telegram_to_window(1, "@1", 42, "hello")
+        await send_telegram_to_window(1, "@1", 42, "hello", adapter=adapter)
 
     assert consume_telegram_injection(1, "@1", 42, "hello") is False
 

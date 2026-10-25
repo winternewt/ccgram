@@ -27,6 +27,7 @@ from telegram import Message
 from ...providers import AgentProvider
 from ... import window_query
 from ...multiplexer import multiplexer as tmux_manager
+from ...session_protocol.messages import parse_records, read_entries
 from ...utils import task_done_callback
 from ..messaging_pipeline.message_sender import safe_reply
 
@@ -139,7 +140,6 @@ def _extract_pane_delta(before: str | None, after: str | None) -> str:
 
 async def _capture_command_probe_context(
     window_id: str,
-    provider: AgentProvider,
 ) -> tuple[str | None, int | None, str | None]:
     """Capture transcript offset + pane snapshot before sending a command."""
     view = window_query.view_window(window_id)
@@ -149,14 +149,7 @@ async def _capture_command_probe_context(
     since_offset: int | None = None
     if transcript_path:
         try:
-            if provider.capabilities.supports_incremental_read:
-                since_offset = Path(transcript_path).stat().st_size
-            else:
-                _, since_offset = await asyncio.to_thread(
-                    provider.read_transcript_file,
-                    transcript_path,
-                    0,
-                )
+            since_offset = Path(transcript_path).stat().st_size
         except OSError:
             since_offset = None
     pane_before = await tmux_manager.capture_pane(window_id)
@@ -173,39 +166,31 @@ async def _probe_transcript_command_error(
     if not transcript_path or since_offset is None:
         return None
 
-    def _read_incremental_entries(path: str, offset: int) -> list[dict]:
-        entries: list[dict] = []
-        with Path(path).open("r", encoding="utf-8") as fh:
-            fh.seek(offset)
-            for line in fh:
-                parsed = provider.parse_transcript_line(line)
-                if parsed:
-                    entries.append(parsed)
-        return entries
-
     try:
-        if provider.capabilities.supports_incremental_read:
-            entries = await asyncio.to_thread(
-                _read_incremental_entries,
-                transcript_path,
-                since_offset,
-            )
-        else:
-            entries, _ = await asyncio.to_thread(
-                provider.read_transcript_file,
-                transcript_path,
-                since_offset,
-            )
+        entries = await asyncio.to_thread(
+            read_entries, Path(transcript_path), provider.capabilities.name
+        )
+        entries = [entry for entry in entries if entry.offset >= since_offset]
     except OSError, NotImplementedError:
         return None
 
-    messages, _ = provider.parse_transcript_entries(entries, pending_tools={})
-    for msg in messages:
-        if msg.role != "assistant":
+    records, _ = parse_records(
+        entries,
+        provider.capabilities.name,
+        deduplicate_updates=True,
+    )
+    for _, record in records:
+        if record.role != "agent":
             continue
-        found = _extract_probe_error_line(msg.text, cc_slash)
-        if found:
-            return found
+        for part in record.parts:
+            if part.get("type") not in {"text", "notice"}:
+                continue
+            text = part.get("text")
+            if not isinstance(text, str):
+                continue
+            found = _extract_probe_error_line(text, cc_slash)
+            if found:
+                return found
     return None
 
 

@@ -1,0 +1,37 @@
+{
+  "v": 1,
+  "epoch": "e_example",
+  "class": "durable",
+  "type": "request.opened",
+  "data": {
+    "id": "r_00000000000000000000000002",
+    "sessionId": "s_00000000000000000000000001",
+    "kind": "permission",
+    "source": "hook",
+    "title": "Run uv run pytest",
+    "tool": {
+      "name": "Bash",
+      "kind": "execute",
+      "input": {
+        "command": "uv run pytest"
+      }
+    },
+    "options": [
+      {
+        "id": "1",
+        "label": "Yes",
+        "kind": "allow_once"
+      },
+      {
+        "id": "3",
+        "label": "No",
+        "kind": "reject_once"
+      }
+    ],
+    "responseSchema": null,
+    "openedAt": "2026-10-20T10:33:12Z",
+    "expiresAt": null
+  },
+  "sessionId": "s_00000000000000000000000001",
+  "seq": 10
+}

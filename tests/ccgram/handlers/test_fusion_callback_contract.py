@@ -99,7 +99,11 @@ async def test_shell_offer_losslessly_round_trips_herdr_target() -> None:
         return_value=MagicMock(),
     ) as safe_send:
         await _show_offer_keyboard(
-            HERDR_TARGET, client=MagicMock(), chat_id=1, thread_id=2
+            HERDR_TARGET,
+            adapter=MagicMock(),
+            client=MagicMock(),
+            chat_id=1,
+            thread_id=2,
         )
 
     assert safe_send.await_args is not None

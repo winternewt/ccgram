@@ -1,0 +1,13 @@
+{
+  "v": 1,
+  "epoch": "e_example",
+  "class": "durable",
+  "type": "action.updated",
+  "data": {
+    "actionId": "00000000-0000-4000-8000-000000000001",
+    "outcome": "sent",
+    "messageId": "conv/entry"
+  },
+  "sessionId": "s_00000000000000000000000001",
+  "seq": 10
+}

@@ -122,6 +122,9 @@ _SINGLETON_ALLOWLIST = frozenset(
         "toolbar/toolbar_callbacks.py",
         "topics/directory_browser.py",
         "topics/directory_callbacks.py",
+        # /start in a fresh topic records its chat and reads its binding, as
+        # text_handler does for the first message (fork, 5fe9a34).
+        "topics/new_command.py",
         # provider_mode_callbacks uses thread_router for the double-click guard
         # (same routing pattern as directory_callbacks).
         "topics/provider_mode_callbacks.py",

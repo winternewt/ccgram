@@ -303,9 +303,10 @@ class TestDashboardKillCleanup:
         self, deps: SimpleNamespace
     ) -> None:
         deps.router.iter_thread_bindings.return_value = [(100, 42, "@0")]
-        deps.mux.kill_window = AsyncMock()
         query = AsyncMock()
         client = MagicMock()
+        adapter = MagicMock()
+        adapter.close = AsyncMock(return_value=(True, "closed"))
 
         with (
             patch(
@@ -323,7 +324,7 @@ class TestDashboardKillCleanup:
             ) as cleanup,
             patch("ccgram.handlers.sessions_dashboard.safe_edit"),
         ):
-            await handle_sessions_kill_confirm(query, 100, "@0", client)
+            await handle_sessions_kill_confirm(query, 100, "@0", client, adapter)
 
         session.flush_state.assert_called_once()
         cleanup.assert_awaited_once_with(client, router=deps.router)

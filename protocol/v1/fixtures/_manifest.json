@@ -1,0 +1,77 @@
+{
+  "Session": [
+    "session.json"
+  ],
+  "Message": [
+    "message.json"
+  ],
+  "Request": [
+    "request.json",
+    "request-screen.json"
+  ],
+  "Action": [
+    "action.json",
+    "action-run.interrupt.json",
+    "action-request.respond.json",
+    "action-terminal.key.json",
+    "action-terminal.paste.json",
+    "action-session.close.json",
+    "action-session.resume.json",
+    "action-session.rename.json"
+  ],
+  "ActionResult": [
+    "action-result.json",
+    "action-result-rejected.json",
+    "action-result-unknown.json"
+  ],
+  "History": [
+    "history.json"
+  ],
+  "Part": [
+    "part-text.json",
+    "part-tool.json",
+    "part-thinking.json",
+    "part-image.json",
+    "part-file.json",
+    "part-notice.json"
+  ],
+  "Meta": [
+    "meta.json"
+  ],
+  "Error": [
+    "error.json"
+  ],
+  "PairingResult": [
+    "pairing-result.json"
+  ],
+  "CreateSession": [
+    "create-session.json"
+  ],
+  "Device": [
+    "device.json"
+  ],
+  "Terminal": [
+    "terminal.json"
+  ],
+  "ServerFrame": [
+    "server-welcome.json",
+    "server-session.snapshot.json",
+    "server-session.updated.json",
+    "server-session.removed.json",
+    "server-message.upsert.json",
+    "server-request.opened.json",
+    "server-request.closed.json",
+    "server-action.updated.json",
+    "server-status.tick.json",
+    "server-terminal.frame.json"
+  ],
+  "ClientFrame": [
+    "client-hello.json",
+    "client-subscribe.json",
+    "client-terminal.watch.json",
+    "client-terminal.unwatch.json"
+  ],
+  "Upload": [
+    "upload.json"
+  ]
+}

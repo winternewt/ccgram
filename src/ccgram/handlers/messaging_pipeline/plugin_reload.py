@@ -9,7 +9,9 @@ to retype it.
 
 import re
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
@@ -60,17 +62,38 @@ def requests_plugin_reload(msg: NewMessage) -> bool:
 
 
 async def send_plugin_reload(
-    user_id: int, window_id: str, thread_id: int | None, chat_id: int | None
+    user_id: int,
+    window_id: str,
+    thread_id: int | None,
+    chat_id: int | None,
+    *,
+    resolve_adapter: Callable[[], Any],
 ) -> str | None:
-    """Type /reload-plugins into the window and return a notice, or None if cooling down."""
+    """Type /reload-plugins into the window and return a notice, or None if cooling down.
+
+    ``resolve_adapter`` returns the session adapter every pane write goes
+    through; it is resolved only here, when a reload is actually sent.
+    """
     now = time.monotonic()
     last = _last_sent.get(window_id)
     if last is not None and now - last < RELOAD_COOLDOWN_SECONDS:
         logger.info("Auto /reload-plugins skipped in cooldown", window_id=window_id)
         return None
     _last_sent[window_id] = now
+    try:
+        adapter = resolve_adapter()
+    except RuntimeError as exc:
+        logger.warning(
+            "Auto /reload-plugins has no session adapter", window_id=window_id
+        )
+        return f"❌ Could not auto-send {RELOAD_PLUGINS_COMMAND}: {exc}"
     success, error = await send_telegram_to_window(
-        user_id, window_id, thread_id, RELOAD_PLUGINS_COMMAND, chat_id
+        user_id,
+        window_id,
+        thread_id,
+        RELOAD_PLUGINS_COMMAND,
+        chat_id,
+        adapter=adapter,
     )
     if not success:
         logger.warning(

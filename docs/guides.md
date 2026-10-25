@@ -8,7 +8,7 @@ pipx upgrade ccgram                   # pipx
 brew upgrade ccgram                   # Homebrew
 ```
 
-Restart the running bot after upgrading, and check `ccgram --version`. If the bot runs from a development checkout, also upgrade the global executable used by agent hooks. A hook that invokes bare `ccgram` uses the agent's `PATH`, independently of the bot's installation; see [protocol compatibility](#protocol-version-pinning).
+Restart the running bot after upgrading, and check `ccgram --version`. The Telegram `/upgrade` command requests this restart automatically. If it reports that automatic restart is unavailable, restart the bot manually. If the bot runs from a development checkout, also upgrade the global executable used by agent hooks. A hook that invokes bare `ccgram` uses the agent's `PATH`, independently of the bot's installation; see [protocol compatibility](#protocol-version-pinning).
 
 ### Upgrading from 4.10 to 4.11
 
@@ -25,8 +25,10 @@ ccgram status                 # Show running state (no token needed)
 ccgram doctor                 # Validate setup and diagnose issues
 ccgram doctor --fix           # Auto-fix issues (install hook, kill orphans)
 ccgram hook --install         # Install Claude Code hooks
-ccgram hook --uninstall       # Remove all hooks
-ccgram hook --status          # Check per-event hook installation status
+ccgram hook --uninstall       # Remove Claude Code hooks
+ccgram hook --status          # Check Claude Code hook installation
+ccgram hook --provider pi --install  # Install Pi hooks (requires cc-thingz hook-runner)
+ccgram hook --provider pi --status   # Check Pi hook installation
 ccgram --version              # Show version
 ccgram -v                     # Run with debug logging
 ```
@@ -220,7 +222,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CCGRAM_WHISPER_BASE_URL` / `--whisper-base-url`      | _(provider default)_           | Custom OpenAI-compatible endpoint URL                                                                |
 | `CCGRAM_WHISPER_MODEL` / `--whisper-model`            | _(provider default)_           | Model override (e.g., `whisper-large-v3-turbo`)                                                      |
 | `CCGRAM_WHISPER_LANGUAGE` / `--whisper-language`      | _(auto-detect)_                | Force language code (e.g., `en`, `zh`)                                                               |
-| `CCGRAM_WHISPER_TIMEOUT`                             | `60`                          | Seconds before the transcription POST gives up; raise it for local backends with slow model loads     |
+| `CCGRAM_WHISPER_TIMEOUT`                              | `60`                           | Seconds before the transcription POST gives up; raise it for local backends with slow model loads    |
 | `CCGRAM_LLM_PROVIDER`                                 | _(empty = disabled)_           | LLM provider for shell command generation                                                            |
 | `CCGRAM_LLM_API_KEY`                                  | _(empty)_                      | API key for LLM provider (env only)                                                                  |
 | `CCGRAM_LLM_BASE_URL`                                 | _(from provider)_              | Custom LLM API endpoint                                                                              |
@@ -459,6 +461,10 @@ Before each removal, CCGram rechecks the exact chat/topic binding. A topic that 
 
 Session creation owns an exact topic record, saved before the first remote request. That ownership protects the topic during slow startup and replacement. It does not expire while the creation task is running.
 
+For `/new` topic creation and recovery of unfinished topic creation, registration can arrive before the terminal reports the running agent process. CCGram waits for a confirmed foreground matching the selected provider before binding or sending the first message. A readiness timeout keeps the session quarantined and retains the first message in the creation flow. Recovery, including replacement of a deleted topic, also requires matching foreground evidence; elapsed time never substitutes for it. Custom launch scripts must [exec the provider CLI](providers.md#custom-launch-commands).
+
+This startup wait does not cover existing-topic resume/relaunch commands. Their existing input paths still use the normal foreground lease checks.
+
 Startup, periodic cleanup, and `/sync` recover abandoned creation records from current session presence. Recovery verifies the recorded Telegram topic by editing its title to the resolved session name before restoring its binding. It checks only abandoned creation records, never scans all active topics, and sends no temporary probe messages. Missing edit permission or transport errors leave the creation record unresolved.
 
 If the title changes, Telegram posts a rename service message. The rename can remove status, provider, and YOLO badges. A later status refresh may restore these badges and produce another rename notice.
@@ -490,44 +496,31 @@ ccgram --unbound-window-ttl 0
 
 ## Multi-Instance Setup
 
-Run multiple ccgram instances on the same machine, each owning a different Telegram group. All instances can share a single bot token. Because Telegram rate limits are token-wide, divide the expected aggregate traffic across instances; these processes do not share a rate-limit coordinator.
+Run one ccgram process per multiplexer backend for each OS user. The shared session
+core acquires a backend-wide process lock even when the mobile API is disabled.
+Separate `CCGRAM_DIR` or `TMUX_SESSION_NAME` values do not permit a second process
+with that backend. Separate tmux sessions can share linked windows, so a lock for
+each session would not prevent two cores from controlling the same target.
 
-### Example: work + personal instances
+### Work and personal groups in one process
 
-Instance 1 (`~/.ccgram-work/.env`):
-
-```ini
-TELEGRAM_BOT_TOKEN=same_token_for_both
-ALLOWED_USERS=123456789
-CCGRAM_GROUP_ID=-1001111111111
-CCGRAM_INSTANCE_NAME=work
-CCGRAM_DIR=~/.ccgram-work
-TMUX_SESSION_NAME=ccgram-work
-```
-
-Instance 2 (`~/.ccgram-personal/.env`):
+Leave `CCGRAM_GROUP_ID` unset to handle multiple Telegram groups with one core:
 
 ```ini
-TELEGRAM_BOT_TOKEN=same_token_for_both
+TELEGRAM_BOT_TOKEN=your_bot_token
 ALLOWED_USERS=123456789
-CCGRAM_GROUP_ID=-1002222222222
-CCGRAM_INSTANCE_NAME=personal
-CCGRAM_DIR=~/.ccgram-personal
-TMUX_SESSION_NAME=ccgram-personal
+CCGRAM_INSTANCE_NAME=work-and-personal
+TMUX_SESSION_NAME=ccgram
 ```
 
-Run both:
+Add the bot to each group, enable Topics, and grant the required topic permissions.
+Both groups use the same configuration, session discovery, allowed users, and state.
+They do not provide separate control or security boundaries. Use separate machines
+or OS users when those settings and terminal targets must be isolated.
 
-```bash
-CCGRAM_DIR=~/.ccgram-work ccgram &
-CCGRAM_DIR=~/.ccgram-personal ccgram &
-```
-
-Each instance uses a separate tmux session, config directory, and state. When `CCGRAM_GROUP_ID` is set, an instance silently ignores updates from other groups.
-
-Without `CCGRAM_GROUP_ID`, a single instance processes all groups (the default).
-
-> To find your group's chat ID, add [@RawDataBot](https://t.me/RawDataBot) to the group — it replies with the chat ID (a negative number like `-1001234567890`).
+Set `CCGRAM_GROUP_ID` to one group ID to restrict the process to that group. It then
+ignores updates from other groups. To find the ID, add
+[@RawDataBot](https://t.me/RawDataBot) to the group; it replies with the negative chat ID.
 
 ## Creating Sessions from the Terminal
 

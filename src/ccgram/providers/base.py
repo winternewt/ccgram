@@ -199,41 +199,6 @@ class AgentProvider(Protocol):
         """List sessions owned by this provider, optionally for one workspace."""
         ...
 
-    def parse_transcript_line(self, line: str) -> dict[str, Any] | None:
-        """Parse a single raw transcript line into a structured dict.
-
-        Returns None for empty, invalid, or skipped lines.
-        """
-        ...
-
-    def read_transcript_file(
-        self, file_path: str, last_offset: int
-    ) -> tuple[list[dict[str, Any]], int]:
-        """Read a whole-file transcript and return new entries since last_offset.
-
-        For providers with ``supports_incremental_read=False`` (e.g. Gemini),
-        this reads the entire file as JSON, extracts the messages array, and
-        returns only messages after index ``last_offset``.
-
-        Returns (new_entries, new_offset).
-        """
-        ...
-
-    def parse_transcript_entries(
-        self,
-        entries: list[dict[str, Any]],
-        pending_tools: dict[str, Any],
-        cwd: str | None = None,
-    ) -> tuple[list[AgentMessage], dict[str, Any]]:
-        """Parse a batch of transcript entries into AgentMessages.
-
-        Args:
-            cwd: Working directory for shortening file paths in tool summaries.
-
-        Returns (messages, updated_pending_tools).
-        """
-        ...
-
     def parse_terminal_status(
         self, pane_text: str, *, pane_title: str = ""
     ) -> StatusUpdate | None:
@@ -251,20 +216,6 @@ class AgentProvider(Protocol):
         """Extract ``!`` command output from a captured tmux pane.
 
         Returns the command echo and output lines, or None if not found.
-        """
-        ...
-
-    def is_user_transcript_entry(self, entry: dict[str, Any]) -> bool:
-        """Return True if this entry represents a human turn in the conversation.
-
-        Excludes tool results, summaries, system messages, and metadata.
-        """
-        ...
-
-    def parse_history_entry(self, entry: dict[str, Any]) -> AgentMessage | None:
-        """Parse a single raw transcript entry into an AgentMessage for history.
-
-        Returns None for non-parseable entries (summaries, metadata, etc.).
         """
         ...
 

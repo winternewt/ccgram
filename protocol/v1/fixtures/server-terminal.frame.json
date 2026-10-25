@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "epoch": "e_example",
+  "class": "ephemeral",
+  "type": "terminal.frame",
+  "data": {
+    "pane": "p0",
+    "rows": 24,
+    "cols": 80,
+    "ansi": "\u001b[32mReady\u001b[0m",
+    "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "sessionId": "s_00000000000000000000000001"
+}

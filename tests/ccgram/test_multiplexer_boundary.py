@@ -10,8 +10,8 @@ module imports:
 - the deleted legacy ``ccgram.tmux_manager`` module.
 
 Callers may import the neutral seam surface — ``ccgram.multiplexer`` (proxy),
-``ccgram.multiplexer.base`` (Protocol + value types), ``multiplexer.vim_state``,
-``multiplexer.window_ops`` — none of which pull in a backend.
+``ccgram.multiplexer.base`` (Protocol + value types), and
+``multiplexer.vim_state`` — none of which pull in a backend.
 
 Exempt: everything under ``multiplexer/**`` (the backends and their wiring),
 ``bootstrap.py`` (wires the proxy from config), and ``main.py`` (needs the tmux
@@ -143,7 +143,6 @@ def test_audit_allows_the_neutral_seam_surface() -> None:
         "from ...multiplexer import multiplexer as tmux_manager\n"
         "from ...multiplexer.base import WindowRef, PaneInfo\n"
         "from ...multiplexer.vim_state import has_insert_indicator\n"
-        "from ...multiplexer.window_ops import send_to_window\n"
     )
     offenders = _forbidden_imports_in_source(
         clean, SRC_ROOT / "handlers" / "live" / "fake_handler.py"

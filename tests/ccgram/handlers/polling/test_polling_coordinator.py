@@ -105,7 +105,7 @@ async def _run_loop_once(bot: Bot, **kwargs: Any) -> _LoopCtx:
         ),
         contextlib.suppress(asyncio.CancelledError),
     ):
-        await status_poll_loop(bot)
+        await status_poll_loop(bot, MagicMock())
     return ctx
 
 
@@ -151,11 +151,14 @@ class TestStatusPollLoopDelegatesPeriodicTasks:
             contextlib.suppress(asyncio.CancelledError),
         ):
             ctx.mocks["reconciliation_listing"].return_value = None
-            await status_poll_loop(bot)
+            await status_poll_loop(bot, MagicMock())
 
         ctx.mocks["tick_window"].assert_not_called()
         ctx.mocks["run_periodic"].assert_not_called()
         ctx.mocks["run_lifecycle"].assert_not_called()
+        # Every tick hits the same outage; the skip notice is throttled per key.
+        ctx.mocks["log_throttled"].assert_called_once()
+        assert ctx.mocks["log_throttled"].call_args.args[1] == "poll-listing"
 
 
 class TestStatusPollLoopPassesWindowLookup:
@@ -191,7 +194,7 @@ class TestStatusPollLoopRespectsConfigInterval:
                 ),
                 contextlib.suppress(asyncio.CancelledError),
             ):
-                await status_poll_loop(bot)
+                await status_poll_loop(bot, MagicMock())
 
         assert sleep_delays == [2.5]
 
@@ -222,7 +225,7 @@ class TestBackoffOnListingError:
                 ),
                 contextlib.suppress(asyncio.CancelledError),
             ):
-                await status_poll_loop(bot)
+                await status_poll_loop(bot, MagicMock())
         return delays
 
     async def test_consecutive_errors_double_the_delay(self):
@@ -274,7 +277,7 @@ class TestPerBindingError:
                 ),
                 contextlib.suppress(asyncio.CancelledError),
             ):
-                await status_poll_loop(bot)
+                await status_poll_loop(bot, MagicMock())
 
         assert call_order == ["@0", "@1", "@2"]
 
@@ -293,6 +296,7 @@ class TestImportsAreMinimal:
             "..multiplexer",
             "..multiplexer.reconciliation",
             "..utils",
+            "...session_protocol.telegram",
             "..config",
             ".window_tick",
             ".polling_runtime",
@@ -392,7 +396,9 @@ class TestTickBoundWindowsIsolatedRuntime:
             ) as mock_discover,
         ):
             mock_router.iter_thread_bindings.return_value = [(user_id, thread_id, wid)]
-            await _tick_bound_windows(bot, window_lookup, runtime=isolated)
+            await _tick_bound_windows(
+                bot, window_lookup, adapter=MagicMock(), runtime=isolated
+            )
 
         # tick_window early-returns on dead-notified; discover never reached.
         mock_discover.assert_not_called()

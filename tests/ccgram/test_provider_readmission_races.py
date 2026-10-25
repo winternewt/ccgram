@@ -3,7 +3,7 @@
 import json
 import os
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -112,7 +112,9 @@ async def test_same_provider_selection_does_not_replace_primary_with_nested(
         agent_command, "_redetect_provider", AsyncMock(return_value="claude")
     )
 
-    provider, _reply = await agent_command._apply_switch(WINDOW, selection)
+    provider, _reply = await agent_command._apply_switch(
+        WINDOW, selection, adapter=MagicMock()
+    )
 
     assert provider == "claude"
     assert store.window_states[WINDOW].session_id == "primary"
@@ -133,7 +135,9 @@ async def test_monitor_does_not_reload_snapshot_from_before_auto(
     )
 
     async def select_auto():
-        provider, _reply = await agent_command._apply_switch(WINDOW, "auto")
+        provider, _reply = await agent_command._apply_switch(
+            WINDOW, "auto", adapter=MagicMock()
+        )
         assert provider == "shell"
         assert store.window_states[WINDOW].provider_name == "shell"
         assert json.loads(config.session_map_file.read_text()) == {}

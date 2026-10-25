@@ -224,7 +224,16 @@ class TestUploadTypingFailure:
             patch.object(file_handler, "safe_reply", new_callable=AsyncMock),
         ):
             await file_handler._upload_and_notify(
-                message, 1, 42, "a.txt", "fid", 10, "File", "see {path}", "📎"
+                message,
+                1,
+                42,
+                "a.txt",
+                "fid",
+                10,
+                "File",
+                "see {path}",
+                "📎",
+                adapter=MagicMock(),
             )
 
         mock_send.assert_awaited_once()
@@ -266,7 +275,16 @@ class TestUploadNotifiesAbsolutePath:
             ) as mock_reply,
         ):
             await file_handler._upload_and_notify(
-                message, 1, 42, "a.txt", "fid", 10, "File", "see {path}", "📎"
+                message,
+                1,
+                42,
+                "a.txt",
+                "fid",
+                10,
+                "File",
+                "see {path}",
+                "📎",
+                adapter=MagicMock(),
             )
 
         assert mock_send.await_args is not None
@@ -289,6 +307,17 @@ class TestResolveUploadDir:
             ("repo", None, "Session working directory is not absolute."),
             # a control character in the cwd would split the literal tmux send
             ("/tmp/re\npo", None, "Session working directory is not usable."),
+            ("/tmp/re\x00po", None, "Session working directory is not usable."),
+            ("/tmp/re\tpo", None, "Session working directory is not usable."),
+            ("/tmp/re\x1fpo", None, "Session working directory is not usable."),
+            ("/tmp/re\x7fpo", None, "Session working directory is not usable."),
+            ("/tmp/re\x80po", None, "Session working directory is not usable."),
+            ("/tmp/re\x9fpo", None, "Session working directory is not usable."),
+            # a C1 control is executed by terminals on echo (U+009B is CSI)
+            ("/tmp/re\x9bpo", None, "Session working directory is not usable."),
+            # a nonprinting-but-legal Unicode char (NBSP) is not a control
+            # character: the path is harmless in a literal tmux send
+            ("/tmp/re\xa0po", Path("/tmp/re\xa0po/.ccgram-uploads"), None),
             # the pre-existing empty-cwd branch of the same function
             ("", None, "Session has no working directory."),
         ],

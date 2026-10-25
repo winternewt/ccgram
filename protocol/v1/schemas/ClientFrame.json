@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ccgram.dev/protocol/v1/schemas/ClientFrame.json",
+  "title": "ClientFrame",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": [
+            "hello"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "protocol": {
+              "enum": [
+                "ccgram/1"
+              ]
+            },
+            "resume": {
+              "type": "object",
+              "properties": {
+                "epoch": {
+                  "type": "string"
+                },
+                "seq": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "epoch",
+                "seq"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "protocol"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": [
+            "subscribe"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "sessionIds": {
+              "oneOf": [
+                {
+                  "enum": [
+                    "*"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            }
+          },
+          "required": [
+            "sessionIds"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": [
+            "terminal.watch"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "pane": {
+              "type": "string"
+            },
+            "intervalMs": {
+              "type": "integer",
+              "minimum": 500,
+              "maximum": 30000
+            }
+          },
+          "required": [
+            "sessionId",
+            "pane",
+            "intervalMs"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": [
+            "terminal.unwatch"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "sessionId"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ],
+      "additionalProperties": true
+    }
+  ]
+}

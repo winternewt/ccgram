@@ -78,11 +78,13 @@ class TestForwardCommandResolution:
         )
         self.mock_probe_ctx = AsyncMock(return_value=(None, None, None))
         self.mock_probe_spawn = MagicMock()
+        self.mock_adapter = MagicMock()
 
         with (
             patch(f"{_FW}.thread_router", self.mock_tr),
             patch(f"{_FW}.window_store", self.mock_ws),
             patch(f"{_FW}.window_query", self.mock_wq),
+            patch(f"{_FW}.adapter_for", return_value=self.mock_adapter),
             patch(
                 f"{_FW}.send_telegram_to_window",
                 new_callable=AsyncMock,
@@ -160,7 +162,7 @@ class TestForwardCommandResolution:
         await forward_command_handler(_make_update(text=typed), _make_context())
 
         self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, forwarded, -100999
+            100, "@1", 42, forwarded, -100999, adapter=self.mock_adapter
         )
         self.mock_send_followup_to_window.assert_not_called()
 
@@ -169,14 +171,18 @@ class TestForwardCommandResolution:
         await forward_command_handler(
             _make_update(text=native), _make_context(), native_command=native
         )
-        self.mock_send_to_window.assert_called_once_with(100, "@1", 42, native, -100999)
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, native, -100999, adapter=self.mock_adapter
+        )
 
     async def test_panel_command_still_uses_provider_native_pi_alias(self) -> None:
         self.mock_provider.capabilities.name = "pi"
         await forward_command_handler(
             _make_update(text="/clear"), _make_context(), native_command="/clear"
         )
-        self.mock_send_to_window.assert_called_once_with(100, "@1", 42, "/new", -100999)
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/new", -100999, adapter=self.mock_adapter
+        )
 
     async def test_confirmation_message_shows_resolved_name(self) -> None:
         update = _make_update(text="/committing_code")
@@ -193,7 +199,7 @@ class TestForwardCommandResolution:
         await forward_command_handler(update, _make_context())
 
         self.mock_send_followup_to_window.assert_called_once_with(
-            100, "@1", 42, "run tests", -100999
+            100, "@1", 42, "run tests", -100999, adapter=self.mock_adapter
         )
         self.mock_send_to_window.assert_not_called()
         reply_text = update.message.reply_text.call_args[0][0]
@@ -214,7 +220,9 @@ class TestForwardCommandResolution:
         update = _make_update(text="/new")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with(100, "@1", 42, "/new", -100999)
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/new", -100999, adapter=self.mock_adapter
+        )
         self.mock_ws.clear_window_session.assert_called_once_with("@1")
 
     async def test_pi_clear_alias_forwards_to_new(self) -> None:
@@ -222,7 +230,9 @@ class TestForwardCommandResolution:
         update = _make_update(text="/clear")
         await forward_command_handler(update, _make_context())
 
-        self.mock_send_to_window.assert_called_once_with(100, "@1", 42, "/new", -100999)
+        self.mock_send_to_window.assert_called_once_with(
+            100, "@1", 42, "/new", -100999, adapter=self.mock_adapter
+        )
         self.mock_ws.clear_window_session.assert_called_once_with("@1")
         reply_text = update.message.reply_text.call_args[0][0]
         assert "Sent: /new" in reply_text
@@ -238,7 +248,7 @@ class TestForwardCommandResolution:
         await forward_command_handler(update, _make_context())
 
         self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/scoped-models", -100999
+            100, "@1", 42, "/scoped-models", -100999, adapter=self.mock_adapter
         )
         reply_text = update.message.reply_text.call_args[0][0]
         assert "drive the picker" in reply_text
@@ -374,7 +384,7 @@ class TestForwardCommandResolution:
             await forward_command_handler(update, _make_context())
 
         self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/status", -100999
+            100, "@1", 42, "/status", -100999, adapter=self.mock_adapter
         )
         self.mock_probe_ctx.assert_not_called()
         self.mock_probe_spawn.assert_not_called()
@@ -406,7 +416,7 @@ class TestForwardCommandResolution:
             await forward_command_handler(update, _make_context())
 
         self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/status", -100999
+            100, "@1", 42, "/status", -100999, adapter=self.mock_adapter
         )
         self.mock_probe_ctx.assert_not_called()
         self.mock_probe_spawn.assert_not_called()
@@ -448,7 +458,7 @@ class TestForwardCommandResolution:
             await forward_command_handler(update, _make_context())
 
         self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, "/status", -100999
+            100, "@1", 42, "/status", -100999, adapter=self.mock_adapter
         )
         codex_provider.build_status_snapshot.assert_not_called()
         assert update.message.reply_text.call_count == 1
@@ -479,7 +489,7 @@ class TestForwardCommandResolution:
         assert mock_arm.call_args.args[0] == "@1"
         assert isinstance(mock_arm.call_args.args[1], PTBTelegramClient)
         self.mock_send_to_window.assert_called_once_with(
-            100, "@1", 42, f"{typed} project", -100999
+            100, "@1", 42, f"{typed} project", -100999, adapter=self.mock_adapter
         )
 
 
@@ -527,6 +537,7 @@ class TestForwardWithRealProvider:
             return_value=MagicMock(window_id="@1")
         )
         self.mock_tm.capture_pane = AsyncMock(return_value="")
+        self.mock_adapter = MagicMock()
 
         self._provider_patch = patch(f"{_FW}.get_provider_for_window")
         self._mock_get_provider = self._provider_patch.start()
@@ -535,6 +546,7 @@ class TestForwardWithRealProvider:
             patch(f"{_FW}.thread_router", self.mock_tr),
             patch(f"{_FW}.window_store", self.mock_ws),
             patch(f"{_FW}.window_query", self.mock_wq),
+            patch(f"{_FW}.adapter_for", return_value=self.mock_adapter),
             patch(
                 f"{_FW}.send_telegram_to_window",
                 new_callable=AsyncMock,

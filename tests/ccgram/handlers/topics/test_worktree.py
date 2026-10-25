@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ccgram.handlers.topics.worktree import (
+from ccgram.worktrees import (
     WorktreeError,
     check_worktree_eligibility,
     create_worktree,
@@ -13,6 +13,13 @@ from ccgram.handlers.topics.worktree import (
     validate_branch_name,
     worktree_path_for,
 )
+
+
+@pytest.mark.parametrize(
+    "name", ["feature\x00name", "feature\ud800name", "feature\udfffname"]
+)
+def test_branch_validation_rejects_invalid_subprocess_arguments(name):
+    assert validate_branch_name(name) is False
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:

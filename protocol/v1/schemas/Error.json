@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ccgram.dev/protocol/v1/schemas/Error.json",
+  "title": "Error",
+  "type": "object",
+  "properties": {
+    "error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "invalid_request",
+            "unauthorized",
+            "not_found",
+            "binding_conflict",
+            "request_closed",
+            "request_open",
+            "unsupported_action",
+            "session_busy",
+            "rate_limited",
+            "backend_unavailable"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {}
+      },
+      "required": [
+        "code",
+        "message",
+        "details"
+      ],
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "error"
+  ],
+  "additionalProperties": true
+}

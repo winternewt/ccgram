@@ -24,6 +24,19 @@ from ccgram.window_state_store import WindowState, WindowStateStore
 
 
 class TestReads:
+    @pytest.mark.parametrize(
+        "stored,reported", [("ab-CD", "AB-cd"), ("AB-cd", "ab-CD")]
+    )
+    def test_identity_resolves_stored_id_case(self, store, stored, reported):
+        store.window_states[stored] = WindowState(
+            session_id="conv", provider_name="claude", transcript_path="/tmp/t.jsonl"
+        )
+        identity = get_identity(reported)
+        assert identity is not None
+        assert identity.session_id == "conv"
+        assert identity.transcript_path == Path("/tmp/t.jsonl")
+        assert identity.window_id == reported
+
     def test_get_identity_missing(self, store: WindowStateStore) -> None:
         assert get_identity("@missing") is None
 

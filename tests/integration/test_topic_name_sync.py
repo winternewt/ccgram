@@ -5,7 +5,11 @@
 come from the bot itself (the emoji-prefixed status label).
 """
 
+from collections.abc import AsyncGenerator
+from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,6 +17,10 @@ from telegram import Chat, ForumTopicEdited, Message, Update, User
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from ccgram.session import AuditResult
+from ccgram.session_protocol.backend import CreationOptions, Prompt, Target
+from ccgram.session_protocol.models import ProtocolError, Status, utc_now
+from ccgram.session_protocol.service import LocalSessionService
+from ccgram.session_protocol.store import ProtocolStore
 
 pytestmark = pytest.mark.integration
 
@@ -21,6 +29,81 @@ TEST_CHAT_ID = -100999
 TEST_THREAD_ID = 42
 
 _MOD_SYNC = "ccgram.handlers.sync_command"
+
+
+class _TopicRenameBackend:
+    def __init__(self) -> None:
+        self.target = Target(
+            id="@0",
+            title="fish",
+            cwd="/workspace",
+            provider="claude",
+            conversation_id="",
+            transcript=None,
+            pane_id="%1",
+            pane_title="claude",
+            rows=24,
+            cols=80,
+            process_id=1,
+            approval_mode="normal",
+            status=Status("idle", "", "screen", utc_now()),
+            host="test-host",
+            foreground_argv=("claude",),
+        )
+        self.rename_calls: list[tuple[str, str]] = []
+
+    async def targets(self) -> list[Target]:
+        return [self.target]
+
+    async def inspect(self, target_id: str) -> Target:
+        if target_id != self.target.id:
+            raise ProtocolError(404, "not_found", "Session target not found")
+        return self.target
+
+    async def prompt(self, target: Target) -> Prompt | None:
+        return None
+
+    async def terminal(self, target: Target, pane: str) -> dict[str, Any]:
+        raise AssertionError("terminal is unused in this test")
+
+    async def send_text(
+        self, target: Target, text: str, *, enter: bool, raw: bool | None = None
+    ) -> bool:
+        raise AssertionError("send_text is unused in this test")
+
+    async def send_key(self, target: Target, key: str) -> bool:
+        raise AssertionError("send_key is unused in this test")
+
+    async def send_followup(self, target: Target, text: str) -> bool:
+        raise AssertionError("send_followup is unused in this test")
+
+    async def select_pane(self, target: Target, pane_id: str) -> Target:
+        raise AssertionError("select_pane is unused in this test")
+
+    async def split(self, target: Target) -> str | None:
+        raise AssertionError("split is unused in this test")
+
+    async def close(self, target: Target) -> bool:
+        raise AssertionError("close is unused in this test")
+
+    async def rename(self, target: Target, title: str) -> bool:
+        self.rename_calls.append((target.id, title))
+        self.target = replace(self.target, title=title)
+        return True
+
+    async def commands(self, target: Target) -> list[dict[str, str]]:
+        raise AssertionError("commands are unused in this test")
+
+    async def create(
+        self,
+        data: dict[str, Any],
+        *,
+        trusted_options: CreationOptions | None = None,
+    ) -> Target:
+        raise AssertionError("create is unused in this test")
+
+    async def resume(self, target: Target, conversation_id: str) -> bool:
+        raise AssertionError("resume is unused in this test")
 
 
 def _register(application: Application) -> None:
@@ -34,8 +117,16 @@ def _register(application: Application) -> None:
 
 
 @pytest.fixture
-async def app(make_ptb_app) -> Application:
-    return await make_ptb_app(_register)
+async def app(make_ptb_app, tmp_path: Path) -> AsyncGenerator[Application, None]:
+    application = await make_ptb_app(_register)
+    backend = _TopicRenameBackend()
+    store = ProtocolStore(tmp_path / "topic-name-sync.sqlite3")
+    application.bot_data["session_service"] = LocalSessionService(backend, store)
+    application.bot_data["test_backend"] = backend
+    yield application
+    store.close()
+    application.bot_data.pop("session_service", None)
+    application.bot_data.pop("test_backend", None)
 
 
 def _make_topic_edited_update(
@@ -115,24 +206,29 @@ async def test_topic_edited_renames_window_only_for_user_edits(
     app, new_name: str, current_display_name: str, expected_rename: str | None
 ) -> None:
     update = _make_topic_edited_update(new_name, bot=app.bot)
+    backend = app.bot_data["test_backend"]
+    assert isinstance(backend, _TopicRenameBackend)
 
     with (
-        patch("ccgram.bot.is_user_allowed", return_value=True),
-        patch("ccgram.bot.thread_router.get_window_for_chat_thread", return_value="@0"),
         patch(
-            "ccgram.bot.thread_router.get_display_name",
+            "ccgram.handlers.topics.topic_lifecycle.config.is_user_allowed",
+            return_value=True,
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_lifecycle.thread_router.get_window_for_chat_thread",
+            return_value="@0",
+        ),
+        patch(
+            "ccgram.handlers.topics.topic_lifecycle.thread_router.get_display_name",
             return_value=current_display_name,
         ),
         patch(
-            "ccgram.multiplexer.tmux.tmux_manager.rename_window",
-            new_callable=AsyncMock,
-            return_value=True,
-        ) as mock_rename,
-        patch("ccgram.bot.session_manager.set_display_name"),
+            "ccgram.handlers.topics.topic_lifecycle.session_manager.set_display_name"
+        ),
     ):
         await app.process_update(update)
 
     if expected_rename is None:
-        mock_rename.assert_not_awaited()
+        assert backend.rename_calls == []
     else:
-        mock_rename.assert_awaited_once_with("@0", expected_rename)
+        assert backend.rename_calls == [("@0", expected_rename)]

@@ -399,11 +399,14 @@ class Multiplexer(Protocol):
         enter: bool = True,
         literal: bool = True,
         window_id: str | None = None,
+        raw: bool = True,
     ) -> bool:
         """Send text to a specific pane (by stable pane ID).
 
         ``window_id`` limits the search to that window (cross-window access
-        prevention).  Returns True on success.
+        prevention). Direct input is the default for existing shell callers.
+        ``raw=False`` enables TUI submission handling for agent messages.
+        Returns True on success.
         """
         ...
 

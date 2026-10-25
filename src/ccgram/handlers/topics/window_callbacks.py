@@ -21,7 +21,10 @@ from ...telegram_client import PTBTelegramClient, TelegramClient
 from ...session import session_manager
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
+from ...window_state_ports.identity_state import get_initial_provider_name
 from ..telegram_origin import send_telegram_to_window
+from ...session_protocol.telegram import TelegramSessionAdapter, adapter_for
+from ...session_protocol.models import ProtocolError
 from ..callback_data import CB_WIN_BIND, CB_WIN_CANCEL, CB_WIN_NEW
 from ..callback_helpers import get_thread_id
 from .directory_browser import (
@@ -101,6 +104,7 @@ async def _detect_and_setup_provider(
     window_id: str,
     pane_current_command: str | None,
     *,
+    adapter: TelegramSessionAdapter,
     client: TelegramClient | None = None,
     user_id: int = 0,
     thread_id: int = 0,
@@ -136,6 +140,7 @@ async def _detect_and_setup_provider(
             await ensure_setup(
                 window_id,
                 "external_bind",
+                adapter=adapter,
                 client=client,
                 chat_id=thread_router.resolve_chat_id(user_id, thread_id),
                 thread_id=thread_id,
@@ -151,34 +156,70 @@ async def _forward_pending_text(
     text: str,
     provider_name: str,
     *,
+    adapter,
     is_existing_window: bool = False,
     chat_id: int | None = None,
+    shell_exit_detected: bool = False,
 ) -> None:
-    """Forward pending text to a newly bound window, routing shell via LLM.
+    """Forward pending text to an existing target or a new shell via LLM.
 
     Args:
         is_existing_window: True when binding an existing window (not a fresh
-            one from directory browser).  For shell, skips handle_shell_message
-            to avoid _ensure_prompt_marker racing with the offer keyboard.
+            one from directory browser). Existing shells receive explicit
+            terminal input to avoid racing _ensure_prompt_marker with the offer UI.
     """
     # Lazy: same providers cycle as _detect_and_setup_provider.
     from ...providers import get_provider_for_window
 
     provider = get_provider_for_window(window_id, provider_name)
     is_chat_first = bool(provider and provider.capabilities.chat_first_command_path)
-    if is_chat_first and not is_existing_window:
+    if is_chat_first and is_existing_window:
+        if shell_exit_detected:
+            send_ok = False
+            send_msg = (
+                "Agent exited or shell access is not confirmed; recover the session "
+                "or run /agent shell before sending input."
+            )
+        else:
+            send_ok, send_msg = await _send_verified_shell_input(
+                user_id,
+                window_id,
+                thread_id,
+                text,
+                chat_id,
+                adapter,
+            )
+        if not send_ok:
+            logger.warning(
+                "Failed to forward pending text to window %s (user %s): %s",
+                window_id,
+                user_id,
+                send_msg,
+            )
+            await safe_send(
+                client,
+                thread_router.resolve_chat_id(user_id, thread_id),
+                f"❌ Failed to forward pending message: {send_msg}",
+                message_thread_id=thread_id,
+            )
+    elif is_chat_first:
         # Lazy: shell ↔ topics cycle.
         from ..shell.shell_commands import handle_shell_message
 
         await handle_shell_message(
-            client, user_id, thread_id, window_id, text, chat_id=chat_id
+            client,
+            user_id,
+            thread_id,
+            window_id,
+            text,
+            chat_id=chat_id,
+            adapter=adapter,
         )
     else:
-        # For non-shell providers or existing shell windows, send raw text.
-        # Existing shell windows skip handle_shell_message to avoid
-        # _ensure_prompt_marker racing with the offer keyboard just shown.
+        # Agent sessions use the message action. It is rejected by the protocol
+        # if this target has already fallen back to a shell.
         send_ok, send_msg = await send_telegram_to_window(
-            user_id, window_id, thread_id, text, chat_id
+            user_id, window_id, thread_id, text, chat_id, adapter=adapter
         )
         if not send_ok:
             logger.warning(
@@ -190,9 +231,51 @@ async def _forward_pending_text(
             await safe_send(
                 client,
                 thread_router.resolve_chat_id(user_id, thread_id),
-                f"❌ Failed to send pending message: {send_msg}",
+                f"❌ Failed to forward pending message: {send_msg}",
                 message_thread_id=thread_id,
             )
+
+
+async def _send_verified_shell_input(
+    user_id: int,
+    window_id: str,
+    thread_id: int,
+    text: str,
+    chat_id: int | None,
+    adapter,
+) -> tuple[bool, str]:
+    """Submit to an existing shell only when the protocol confirms its process."""
+    # Lazy: Telegram origin tracking depends on session and provider state.
+    from ..telegram_origin import (
+        forget_telegram_injection,
+        remember_telegram_injection,
+    )
+
+    try:
+        target, snapshot = await adapter.resolve(window_id)
+    except ProtocolError as exc:
+        return False, exc.message
+    if target.provider != "shell" or not target.foreground_verified:
+        return False, "Shell access is not confirmed; recover the session first."
+
+    injection = remember_telegram_injection(
+        user_id, window_id, thread_id, text, chat_id
+    )
+    success = False
+    try:
+        success, message = await adapter.send_text(
+            window_id,
+            text,
+            submit=True,
+            terminal_input=True,
+            expected_binding_version=snapshot.binding_version,
+        )
+        return success, message
+    except ProtocolError as exc:
+        return False, exc.message
+    finally:
+        if not success:
+            forget_telegram_injection(user_id, window_id, thread_id, injection, chat_id)
 
 
 async def _handle_bind(
@@ -249,12 +332,22 @@ async def _handle_bind(
     )
     _store_group_chat_id(user_id, thread_id, update, query)
     client: TelegramClient = PTBTelegramClient(context.bot)
+    # Capture origin before detection updates the window's current provider.
+    # One foreground observation must drive both routing and exit policy: a
+    # second probe can see a different process during an agent exit.
+    previous_provider = window_query.get_window_provider(selected_wid)
+    initial_provider = get_initial_provider_name(selected_wid)
     detected = await _detect_and_setup_provider(
         selected_wid,
         w.pane_current_command,
+        adapter=adapter_for(context.bot_data),
         client=client,
         user_id=user_id,
         thread_id=thread_id,
+    )
+    shell_exit_detected = detected == "shell" and (
+        initial_provider != "shell"
+        and (previous_provider is not None or bool(initial_provider))
     )
 
     await _rename_forum_topic(
@@ -284,7 +377,9 @@ async def _handle_bind(
             selected_wid,
             pending_text,
             detected,
+            adapter=adapter_for(context.bot_data),
             is_existing_window=True,
+            shell_exit_detected=shell_exit_detected,
             chat_id=(
                 update.callback_query.message.chat.id
                 if update.callback_query and update.callback_query.message

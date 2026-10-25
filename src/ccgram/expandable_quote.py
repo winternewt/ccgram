@@ -1,6 +1,6 @@
 """Expandable-quote markup contract — sentinel constants and wrap helper.
 
-Producers (transcript_parser, codex provider, history rendering) wrap text
+Telegram transcript and history renderers wrap text
 in these sentinels when the result should display as a Telegram expandable
 blockquote. The conversion to actual MessageEntity offsets happens in
 ``entity_formatting.convert_to_entities`` after telegramify processes the

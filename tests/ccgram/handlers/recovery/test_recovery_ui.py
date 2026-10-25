@@ -57,6 +57,7 @@ def _patch_recovery_session_manager():
     """
     with (
         patch(f"{_RC}.session_manager"),
+        patch(f"{_TH}.protocol_adapter_for", return_value=MagicMock()),
         patch(
             "ccgram.multiplexer.reconciliation.list_windows_for_reconciliation",
             new_callable=AsyncMock,
@@ -365,6 +366,7 @@ def recovery_env():
         patch(f"{_RC}.safe_edit", new_callable=AsyncMock) as edit,
         patch(f"{_RC}.safe_send", new_callable=AsyncMock) as send,
         patch(f"{_RC}.send_telegram_to_window", new_callable=AsyncMock) as forward,
+        patch(f"{_RC}.adapter_for") as adapter_for,
         patch(f"{_RC}.Path") as path,
         patch(f"{_RP}.window_query") as picker_wq,
         patch(f"{_RP}.Path") as picker_path,
@@ -373,9 +375,12 @@ def recovery_env():
         wq.view_window.return_value = view
         wq.resolve_window_alias.side_effect = lambda window_id: window_id
         picker_wq.view_window.return_value = view
-        tmux.create_window = AsyncMock(
-            return_value=(True, "Window created", "project", "@5")
+        adapter = MagicMock()
+        adapter.create = AsyncMock(
+            return_value=SimpleNamespace(target_id="@5", title="project")
         )
+        adapter.close = AsyncMock(return_value=(True, "Closed"))
+        adapter_for.return_value = adapter
         sync.wait_for_session_map_entry = AsyncMock()
         forward.return_value = (True, "ok")
         router.resolve_chat_id.return_value = -100999
@@ -384,6 +389,7 @@ def recovery_env():
         yield SimpleNamespace(
             router=router,
             tmux=tmux,
+            adapter=adapter,
             wq=wq,
             sync=sync,
             edit=edit,
@@ -406,8 +412,11 @@ class TestRecoveryFreshCallback:
         recovery_env.router.begin_topic_provisioning.assert_called_once_with(
             100, -100999, thread_id=42, kind="replacement", previous_target_id="@0"
         )
-        recovery_env.tmux.create_window.assert_called_once_with(
-            "/tmp/project", agent_args="", launch_command="claude"
+        recovery_env.adapter.create.assert_awaited_once_with(
+            {"provider": "claude", "directory": "/tmp/project"},
+            approval_mode="normal",
+            resume_id=None,
+            continue_session=False,
         )
         recovery_env.sync.wait_for_session_map_entry.assert_awaited_once_with(
             "@5", resolve_window_id=recovery_env.wq.resolve_window_alias
@@ -443,7 +452,14 @@ class TestRecoveryFreshCallback:
 
         await _tap(f"{CB_RECOVERY_FRESH}@0", _make_context(user_data))
 
-        recovery_env.forward.assert_called_once_with(100, "@5", 42, "hello", -100999)
+        recovery_env.forward.assert_awaited_once_with(
+            100,
+            "@5",
+            42,
+            "hello",
+            -100999,
+            adapter=recovery_env.adapter,
+        )
         assert PENDING_THREAD_TEXT not in user_data
         assert PENDING_THREAD_ID not in user_data
         assert RECOVERY_WINDOW_ID not in user_data
@@ -460,8 +476,10 @@ class TestRecoveryFreshCallback:
         assert _toast(query) == "Created"
 
     async def test_fresh_reports_window_creation_failure(self, recovery_env) -> None:
-        recovery_env.tmux.create_window = AsyncMock(
-            return_value=(False, "no free pane", None, None)
+        from ccgram.session_protocol.models import ProtocolError
+
+        recovery_env.adapter.create = AsyncMock(
+            side_effect=ProtocolError(400, "invalid_request", "no free pane")
         )
         user_data = _recovery_user_data()
 
@@ -497,8 +515,11 @@ class TestRecoveryContinueCallback:
     ) -> None:
         await _tap(f"{CB_RECOVERY_CONTINUE}@0", _make_context(_recovery_user_data()))
 
-        recovery_env.tmux.create_window.assert_called_once_with(
-            "/tmp/project", agent_args="--continue", launch_command="claude"
+        recovery_env.adapter.create.assert_awaited_once_with(
+            {"provider": "claude", "directory": "/tmp/project"},
+            approval_mode="normal",
+            resume_id=None,
+            continue_session=True,
         )
         recovery_env.router.attach_provisioning_target.assert_any_call(ANY, "@5")
         recovery_env.router.commit_topic_provisioning.assert_called_once_with(
@@ -513,8 +534,13 @@ class TestRecoveryContinueCallback:
 
         await _tap(f"{CB_RECOVERY_CONTINUE}@0", _make_context(user_data))
 
-        recovery_env.forward.assert_called_once_with(
-            100, "@5", 42, "my message", -100999
+        recovery_env.forward.assert_awaited_once_with(
+            100,
+            "@5",
+            42,
+            "my message",
+            -100999,
+            adapter=recovery_env.adapter,
         )
         assert PENDING_THREAD_TEXT not in user_data
 
@@ -608,10 +634,11 @@ class TestRecoveryResumePickCallback:
 
         await _tap(f"{CB_RECOVERY_PICK}{index}", _make_context(user_data))
 
-        recovery_env.tmux.create_window.assert_called_once_with(
-            "/tmp/project",
-            agent_args=f"--resume {expected_id}",
-            launch_command="claude",
+        recovery_env.adapter.create.assert_awaited_once_with(
+            {"provider": "claude", "directory": "/tmp/project"},
+            approval_mode="normal",
+            resume_id=expected_id,
+            continue_session=False,
         )
         recovery_env.router.attach_provisioning_target.assert_any_call(ANY, "@5")
         recovery_env.router.commit_topic_provisioning.assert_called_once_with(
@@ -699,10 +726,7 @@ class TestRecoveryResumePickCallback:
 
         await _tap(f"{CB_RECOVERY_PICK}0", _make_context(user_data))
 
-        launch_command = recovery_env.tmux.create_window.call_args.kwargs[
-            "launch_command"
-        ]
-        assert "codex" in launch_command, launch_command
+        assert recovery_env.adapter.create.call_args.args[0]["provider"] == "codex"
 
     async def test_pick_rejects_a_session_from_another_provider(
         self, recovery_env
@@ -718,7 +742,7 @@ class TestRecoveryResumePickCallback:
         query = await _tap(f"{CB_RECOVERY_PICK}0", _make_context(user_data))
 
         assert _toast(query) == "Session provider mismatch"
-        recovery_env.tmux.create_window.assert_not_called()
+        recovery_env.adapter.create.assert_not_awaited()
 
 
 class TestRecoveryBackCallback:
@@ -932,20 +956,20 @@ class TestRecoveryPerWindowProvider:
     async def test_continue_uses_per_window_provider(
         self, mock_gpw: MagicMock, _mock_scan: MagicMock, recovery_env
     ) -> None:
-        mock_gpw.return_value.make_launch_args.return_value = "--continue"
+        mock_gpw.return_value.capabilities.name = "codex"
 
         await _tap(f"{CB_RECOVERY_CONTINUE}@0", _make_context(_recovery_user_data()))
 
         mock_gpw.assert_called_with("@0", provider_name=ANY)
-        mock_gpw.return_value.make_launch_args.assert_called_once_with(
-            use_continue=True
+        recovery_env.adapter.create.assert_awaited_once_with(
+            {"provider": "codex", "directory": "/tmp/project"},
+            approval_mode="normal",
+            resume_id=None,
+            continue_session=True,
         )
 
-    @patch(f"{_RP}.get_provider_for_window")
-    async def test_resume_pick_uses_per_window_provider(
-        self, mock_picker_gpw: MagicMock, recovery_env
-    ) -> None:
-        mock_picker_gpw.return_value.make_launch_args.return_value = "--resume sess-1"
+    async def test_resume_pick_uses_per_window_provider(self, recovery_env) -> None:
+        recovery_env.picker_wq.view_window.return_value.provider_name = "codex"
         user_data = _recovery_user_data()
         user_data[RECOVERY_SESSIONS] = [
             {"session_id": "sess-1", "summary": "Fix login bug"},
@@ -953,9 +977,11 @@ class TestRecoveryPerWindowProvider:
 
         await _tap(f"{CB_RECOVERY_PICK}0", _make_context(user_data))
 
-        mock_picker_gpw.assert_called_with("@0", provider_name=ANY)
-        mock_picker_gpw.return_value.make_launch_args.assert_called_once_with(
-            resume_id="sess-1"
+        recovery_env.adapter.create.assert_awaited_once_with(
+            {"provider": "codex", "directory": "/tmp/project"},
+            approval_mode="normal",
+            resume_id="sess-1",
+            continue_session=False,
         )
 
 
@@ -1105,7 +1131,7 @@ class TestScanSessionsForCwd:
     def test_unresolvable_cwd_returns_empty_without_scanning(
         self, projects_root
     ) -> None:
-        with patch(f"{_RP}.get_provider_for_window") as mock_gpw:
+        with patch(f"{_RP}.providers_to_scan") as mock_providers:
             assert scan_sessions_for_cwd("/bad\x00path") == []
 
-        mock_gpw.assert_not_called()
+        mock_providers.assert_not_called()

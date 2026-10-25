@@ -26,6 +26,7 @@ from ...providers import (
 from ...session import session_manager
 from ...session_map import session_map_prefix, session_map_sync
 from ...telegram_client import TelegramClient
+from ...session_protocol.telegram import TelegramSessionAdapter
 from ...multiplexer import multiplexer as tmux_manager
 from ...window_state_ports import identity_state
 
@@ -70,6 +71,7 @@ async def _detect_and_apply_provider(
     identity: identity_state.IdentityProjection,
     w: "TmuxWindow",
     *,
+    adapter: TelegramSessionAdapter,
     client: TelegramClient | None = None,
     chat_id: int = 0,
     thread_id: int = 0,
@@ -112,6 +114,7 @@ async def _detect_and_apply_provider(
             await ensure_setup(
                 window_id,
                 "provider_switch",
+                adapter=adapter,
                 client=client,
                 chat_id=chat_id,
                 thread_id=thread_id,
@@ -258,6 +261,7 @@ def _foreground_process_restarted(
 async def _switch_to_shell(
     window_id: str,
     *,
+    adapter: TelegramSessionAdapter,
     client: TelegramClient | None,
     chat_id: int,
     thread_id: int,
@@ -271,6 +275,7 @@ async def _switch_to_shell(
     await ensure_setup(
         window_id,
         "provider_switch",
+        adapter=adapter,
         client=client,
         chat_id=chat_id,
         thread_id=thread_id,
@@ -283,6 +288,7 @@ async def _complete_transcript_discovery(
     window: "TmuxWindow | None",
     providers_to_try: list[tuple[str, "AgentProvider"]] | None,
     *,
+    adapter: TelegramSessionAdapter,
     client: TelegramClient | None,
     chat_id: int,
     thread_id: int,
@@ -292,7 +298,11 @@ async def _complete_transcript_discovery(
         if _is_agent_origin(window_id, identity):
             return True
         await _switch_to_shell(
-            window_id, client=client, chat_id=chat_id, thread_id=thread_id
+            window_id,
+            adapter=adapter,
+            client=client,
+            chat_id=chat_id,
+            thread_id=thread_id,
         )
         return False
     if not providers_to_try:
@@ -367,6 +377,7 @@ async def discover_and_register_transcript(
     window_id: str,
     *,
     _window: "TmuxWindow | None" = None,
+    adapter: TelegramSessionAdapter,
     client: TelegramClient | None = None,
     user_id: int = 0,
     thread_id: int = 0,
@@ -395,7 +406,13 @@ async def discover_and_register_transcript(
     process_restarted = False
     if w:
         agent_exited = await _detect_and_apply_provider(
-            window_id, identity, w, client=client, chat_id=chat_id, thread_id=thread_id
+            window_id,
+            identity,
+            w,
+            adapter=adapter,
+            client=client,
+            chat_id=chat_id,
+            thread_id=thread_id,
         )
         if agent_exited:
             return True
@@ -431,6 +448,7 @@ async def discover_and_register_transcript(
         identity,
         w,
         providers_to_try,
+        adapter=adapter,
         client=client,
         chat_id=chat_id,
         thread_id=thread_id,

@@ -1,0 +1,583 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ccgram.dev/protocol/v1/schemas/ServerFrame.json",
+  "title": "ServerFrame",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "enum": [
+            1
+          ]
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "class": {
+          "enum": [
+            "control"
+          ]
+        },
+        "type": {
+          "enum": [
+            "welcome"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "epoch": {
+              "type": "string"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "resumed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "epoch",
+            "seq",
+            "resumed"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "v",
+        "epoch",
+        "class",
+        "type",
+        "data"
+      ],
+      "additionalProperties": true,
+      "not": {
+        "required": [
+          "seq"
+        ]
+      }
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "enum": [
+            1
+          ]
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "class": {
+          "enum": [
+            "durable"
+          ]
+        },
+        "type": {
+          "enum": [
+            "session.snapshot"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "data": {
+          "$ref": "Session.json"
+        }
+      },
+      "required": [
+        "v",
+        "epoch",
+        "class",
+        "type",
+        "data",
+        "seq",
+        "sessionId"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "enum": [
+            1
+          ]
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "class": {
+          "enum": [
+            "durable"
+          ]
+        },
+        "type": {
+          "enum": [
+            "session.updated"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "Session.json#/properties/id"
+            },
+            "bindingVersion": {
+              "$ref": "Session.json#/properties/bindingVersion"
+            },
+            "title": {
+              "$ref": "Session.json#/properties/title"
+            },
+            "host": {
+              "$ref": "Session.json#/properties/host"
+            },
+            "cwd": {
+              "$ref": "Session.json#/properties/cwd"
+            },
+            "gitBranch": {
+              "$ref": "Session.json#/properties/gitBranch"
+            },
+            "provider": {
+              "$ref": "Session.json#/properties/provider"
+            },
+            "conversation": {
+              "$ref": "Session.json#/properties/conversation"
+            },
+            "status": {
+              "$ref": "Session.json#/properties/status"
+            },
+            "approvalMode": {
+              "$ref": "Session.json#/properties/approvalMode"
+            },
+            "panes": {
+              "$ref": "Session.json#/properties/panes"
+            },
+            "openRequests": {
+              "$ref": "Session.json#/properties/openRequests"
+            },
+            "capabilities": {
+              "$ref": "Session.json#/properties/capabilities"
+            },
+            "lastActivity": {
+              "$ref": "Session.json#/properties/lastActivity"
+            }
+          },
+          "required": [
+            "bindingVersion"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "v",
+        "epoch",
+        "class",
+        "type",
+        "data",
+        "seq",
+        "sessionId"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "enum": [
+            1
+          ]
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "class": {
+          "enum": [
+            "durable"
+          ]
+        },
+        "type": {
+          "enum": [
+            "session.removed"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "v",
+        "epoch",
+        "class",
+        "type",
+        "data",
+        "seq",
+        "sessionId"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "enum": [
+            1
+          ]
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "class": {
+          "enum": [
+            "durable"
+          ]
+        },
+        "type": {
+          "enum": [
+            "message.upsert"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "data": {
+          "$ref": "Message.json"
+        }
+      },
+      "required": [
+        "v",
+        "epoch",
+        "class",
+        "type",
+        "data",
+        "seq",
+        "sessionId"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "enum": [
+            1
+          ]
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "class": {
+          "enum": [
+            "durable"
+          ]
+        },
+        "type": {
+          "enum": [
+            "request.opened"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "data": {
+          "$ref": "Request.json"
+        }
+      },
+      "required": [
+        "v",
+        "epoch",
+        "class",
+        "type",
+        "data",
+        "seq",
+        "sessionId"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "enum": [
+            1
+          ]
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "class": {
+          "enum": [
+            "durable"
+          ]
+        },
+        "type": {
+          "enum": [
+            "request.closed"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "answered",
+                "dismissed",
+                "interrupted",
+                "turn_ended",
+                "vanished",
+                "expired"
+              ]
+            }
+          },
+          "required": [
+            "requestId",
+            "reason"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "v",
+        "epoch",
+        "class",
+        "type",
+        "data",
+        "seq",
+        "sessionId"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "enum": [
+            1
+          ]
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "class": {
+          "enum": [
+            "durable"
+          ]
+        },
+        "type": {
+          "enum": [
+            "action.updated"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "actionId": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "sent",
+                "rejected",
+                "unknown"
+              ]
+            },
+            "messageId": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "actionId",
+            "outcome"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "v",
+        "epoch",
+        "class",
+        "type",
+        "data",
+        "seq",
+        "sessionId"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "enum": [
+            1
+          ]
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "class": {
+          "enum": [
+            "ephemeral"
+          ]
+        },
+        "type": {
+          "enum": [
+            "status.tick"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "detail"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "v",
+        "epoch",
+        "class",
+        "type",
+        "data",
+        "sessionId"
+      ],
+      "additionalProperties": true,
+      "not": {
+        "required": [
+          "seq"
+        ]
+      }
+    },
+    {
+      "type": "object",
+      "properties": {
+        "v": {
+          "enum": [
+            1
+          ]
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "class": {
+          "enum": [
+            "ephemeral"
+          ]
+        },
+        "type": {
+          "enum": [
+            "terminal.frame"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "data": {
+          "$ref": "Terminal.json"
+        }
+      },
+      "required": [
+        "v",
+        "epoch",
+        "class",
+        "type",
+        "data",
+        "sessionId"
+      ],
+      "additionalProperties": true,
+      "not": {
+        "required": [
+          "seq"
+        ]
+      }
+    }
+  ]
+}

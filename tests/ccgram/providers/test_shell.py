@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -37,8 +38,18 @@ def prompt_setup_mux():
         ),
     ):
         mock_tm.capture_pane = AsyncMock(return_value=None)
-        mock_tm.send_keys = AsyncMock()
         yield mock_tm
+
+
+@pytest.fixture
+def prompt_setup_adapter():
+    adapter = AsyncMock()
+    adapter.resolve.return_value = (
+        SimpleNamespace(pane_id="%0"),
+        SimpleNamespace(binding_version=7),
+    )
+    adapter.setup_prompt.return_value = (True, "Sent")
+    return adapter
 
 
 class TestShellCapabilities:
@@ -87,21 +98,6 @@ class TestShellOverrides:
             provider.make_launch_args(resume_id=resume_id, use_continue=use_continue)
             == ""
         )
-
-    def test_parse_transcript_line_returns_none_for_valid_json(
-        self, provider: ShellProvider
-    ) -> None:
-        assert (
-            provider.parse_transcript_line(
-                '{"type": "assistant", "message": {"content": "hi"}}'
-            )
-            is None
-        )
-
-    def test_read_transcript_file_returns_empty(self, provider: ShellProvider) -> None:
-        entries, offset = provider.read_transcript_file("/any/path.jsonl", 0)
-        assert entries == []
-        assert offset == 0
 
     def test_extract_bash_output_returns_none_even_with_match(
         self, provider: ShellProvider
@@ -221,45 +217,59 @@ class TestSetupShellPrompt:
         ids=["fish", "bash", "zsh", "tcsh", "ksh-fallback"],
     )
     async def test_sends_correct_prompt_command(
-        self, prompt_setup_mux, shell: str, expected_substring: str
+        self,
+        prompt_setup_mux,
+        prompt_setup_adapter,
+        shell: str,
+        expected_substring: str,
     ) -> None:
         prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window(shell))
-        prompt_setup_mux.send_keys = AsyncMock()
 
-        await setup_shell_prompt("@0")
+        await setup_shell_prompt("@0", adapter=prompt_setup_adapter)
 
-        calls = prompt_setup_mux.send_keys.call_args_list
-        prompt_call = calls[1]
-        assert expected_substring in prompt_call[0][1]
+        prompt_setup_adapter.setup_prompt.assert_awaited_once()
+        args = prompt_setup_adapter.setup_prompt.await_args
+        assert args.args[0] == "@0"
+        assert len(args.args) == 2
+        assert expected_substring in args.args[1]
+        assert args.kwargs == {
+            "clear": True,
+            "pane_id": "%0",
+            "expected_binding_version": 7,
+        }
 
-    async def test_sends_clear_after_prompt(self, prompt_setup_mux) -> None:
+    async def test_delegates_clear_flag(
+        self, prompt_setup_mux, prompt_setup_adapter
+    ) -> None:
+        prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window("bash"))
+
+        await setup_shell_prompt("@0", adapter=prompt_setup_adapter, clear=False)
+
+        prompt_setup_adapter.setup_prompt.assert_awaited_once()
+        assert prompt_setup_adapter.setup_prompt.await_args.kwargs["clear"] is False
+
+    async def test_raises_when_adapter_cannot_set_up_prompt(
+        self, prompt_setup_mux, prompt_setup_adapter
+    ) -> None:
         prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window("bash"))
         prompt_setup_mux.send_keys = AsyncMock()
+        prompt_setup_adapter.setup_prompt.return_value = (False, "binding changed")
 
-        await setup_shell_prompt("@0")
+        with pytest.raises(OSError, match="binding changed"):
+            await setup_shell_prompt("@0", adapter=prompt_setup_adapter)
 
-        calls = prompt_setup_mux.send_keys.call_args_list
-        assert len(calls) == 3
-        assert calls[2][0][1] == "clear"
-
-    async def test_send_keys_uses_raw_true(self, prompt_setup_mux) -> None:
-        prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window("bash"))
-        prompt_setup_mux.send_keys = AsyncMock()
-
-        await setup_shell_prompt("@0")
-
-        calls = prompt_setup_mux.send_keys.call_args_list
-        assert calls[1][1].get("raw") is True
-        assert calls[2][1].get("raw") is True
+        prompt_setup_adapter.setup_prompt.assert_awaited_once()
+        prompt_setup_mux.send_keys.assert_not_awaited()
 
     @pytest.mark.usefixtures("_wrap_mode")
-    async def test_skips_setup_when_marker_present(self, prompt_setup_mux) -> None:
+    async def test_skips_setup_when_marker_present(
+        self, prompt_setup_mux, prompt_setup_adapter
+    ) -> None:
         prompt_setup_mux.capture_pane = AsyncMock(return_value="~/code main ❯ ⌘0⌘ ")
-        prompt_setup_mux.send_keys = AsyncMock()
 
-        await setup_shell_prompt("@0")
+        await setup_shell_prompt("@0", adapter=prompt_setup_adapter)
 
-        prompt_setup_mux.send_keys.assert_not_called()
+        prompt_setup_adapter.setup_prompt.assert_not_awaited()
 
 
 class TestGetShellName:
@@ -385,24 +395,28 @@ class TestWrapModeSetup:
         ids=["fish-wrap", "bash-wrap", "zsh-wrap", "tcsh-wrap"],
     )
     async def test_wrap_sends_correct_prompt_command(
-        self, prompt_setup_mux, shell: str, expected_substring: str
+        self,
+        prompt_setup_mux,
+        prompt_setup_adapter,
+        shell: str,
+        expected_substring: str,
     ) -> None:
         prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window(shell))
-        prompt_setup_mux.send_keys = AsyncMock()
 
-        await setup_shell_prompt("@0")
+        await setup_shell_prompt("@0", adapter=prompt_setup_adapter)
 
-        calls = prompt_setup_mux.send_keys.call_args_list
-        prompt_call = calls[1]
-        assert expected_substring in prompt_call[0][1]
+        args = prompt_setup_adapter.setup_prompt.await_args
+        assert args is not None
+        assert expected_substring in args.args[1]
 
-    async def test_wrap_fish_preserves_original_prompt(self, prompt_setup_mux) -> None:
+    async def test_wrap_fish_preserves_original_prompt(
+        self, prompt_setup_mux, prompt_setup_adapter
+    ) -> None:
         prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window("fish"))
-        prompt_setup_mux.send_keys = AsyncMock()
 
-        await setup_shell_prompt("@0")
+        await setup_shell_prompt("@0", adapter=prompt_setup_adapter)
 
-        cmd = prompt_setup_mux.send_keys.call_args_list[1][0][1]
+        cmd = prompt_setup_adapter.setup_prompt.await_args.args[1]
         assert "builtin functions --copy fish_prompt __ccgram_orig_prompt" in cmd
         assert "builtin functions --query __ccgram_orig_prompt" in cmd
         assert "__ccgram_orig_prompt" in cmd
@@ -573,23 +587,40 @@ class TestReplaceSetupCommands:
 
 
 class TestSetupShellPromptClearsBefore:
-    async def test_sends_ctrl_c_before_prompt_command(self, prompt_setup_mux) -> None:
+    async def test_clear_flag_is_delegated_to_session_adapter(
+        self, prompt_setup_mux, prompt_setup_adapter
+    ) -> None:
         prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window("bash"))
-        prompt_setup_mux.send_keys = AsyncMock()
 
-        await setup_shell_prompt("@0")
+        await setup_shell_prompt("@0", adapter=prompt_setup_adapter, clear=False)
 
-        first_call = prompt_setup_mux.send_keys.call_args_list[0]
-        assert first_call[0][1] == "C-c"
-        assert first_call[1].get("enter") is False
-        assert first_call[1].get("literal") is False
+        prompt_setup_adapter.setup_prompt.assert_awaited_once()
+        assert prompt_setup_adapter.setup_prompt.await_args.kwargs["clear"] is False
 
-    async def test_no_clear_when_clear_false(self, prompt_setup_mux) -> None:
-        prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window("bash"))
-        prompt_setup_mux.send_keys = AsyncMock()
 
-        await setup_shell_prompt("@0", clear=False)
+async def test_setup_resolution_failure_is_reported_without_sending(
+    prompt_setup_mux, prompt_setup_adapter
+):
+    from ccgram.session_protocol.models import ProtocolError
 
-        calls = prompt_setup_mux.send_keys.call_args_list
-        assert len(calls) == 2
-        assert all(c[0][1] != "clear" for c in calls)
+    prompt_setup_adapter.resolve.side_effect = ProtocolError(
+        503, "backend_unavailable", "Session backend is unavailable"
+    )
+    with pytest.raises(OSError, match="Session backend is unavailable"):
+        await setup_shell_prompt("@0", adapter=prompt_setup_adapter)
+    prompt_setup_adapter.setup_prompt.assert_not_awaited()
+    prompt_setup_mux.send_keys.assert_not_called()
+
+
+async def test_setup_omits_absent_pane_handle(prompt_setup_mux, prompt_setup_adapter):
+    prompt_setup_mux.find_window_by_id = AsyncMock(return_value=_window("bash"))
+    prompt_setup_adapter.resolve.return_value = (
+        SimpleNamespace(pane_id=""),
+        SimpleNamespace(binding_version=7),
+    )
+
+    await setup_shell_prompt("@0", adapter=prompt_setup_adapter)
+
+    args = prompt_setup_adapter.setup_prompt.await_args
+    assert args.kwargs["pane_id"] is None
+    assert args.kwargs["expected_binding_version"] == 7

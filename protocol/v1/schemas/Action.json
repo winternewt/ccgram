@@ -1,0 +1,351 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ccgram.dev/protocol/v1/schemas/Action.json",
+  "title": "Action",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "bindingVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "message.send"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536,
+              "description": "At most 65536 UTF-8 bytes."
+            },
+            "dismissRequest": {
+              "type": "boolean"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ],
+                "additionalProperties": true
+              },
+              "maxItems": 10
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "bindingVersion",
+        "kind",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "bindingVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "run.interrupt"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "bindingVersion",
+        "kind",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "bindingVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "request.respond"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "optionId": {
+              "type": "string"
+            },
+            "answer": {}
+          },
+          "required": [
+            "requestId"
+          ],
+          "additionalProperties": true,
+          "oneOf": [
+            {
+              "required": [
+                "optionId"
+              ],
+              "not": {
+                "required": [
+                  "answer"
+                ]
+              }
+            },
+            {
+              "required": [
+                "answer"
+              ],
+              "not": {
+                "required": [
+                  "optionId"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "bindingVersion",
+        "kind",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "bindingVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "terminal.key"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "keys": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "keys"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "bindingVersion",
+        "kind",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "bindingVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "terminal.paste"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "bindingVersion",
+        "kind",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "bindingVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "session.close"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "bindingVersion",
+        "kind",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "bindingVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "session.resume"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "conversationId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationId"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "bindingVersion",
+        "kind",
+        "data"
+      ],
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "bindingVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "session.rename"
+          ]
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "title"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "id",
+        "bindingVersion",
+        "kind",
+        "data"
+      ],
+      "additionalProperties": true
+    }
+  ],
+  "discriminator": {
+    "propertyName": "kind"
+  }
+}

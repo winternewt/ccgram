@@ -1,0 +1,12 @@
+{
+  "id": "r_00000000000000000000000002",
+  "sessionId": "s_00000000000000000000000001",
+  "kind": "prompt",
+  "source": "screen",
+  "title": "Run uv run pytest",
+  "tool": null,
+  "options": [],
+  "responseSchema": null,
+  "openedAt": "2026-10-20T10:33:12Z",
+  "expiresAt": null
+}

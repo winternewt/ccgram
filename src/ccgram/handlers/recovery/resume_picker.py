@@ -31,7 +31,6 @@ from telegram import (
 
 from ... import window_query
 from ...providers import (
-    get_provider_for_window,
     is_known_provider,
     providers_to_scan,
 )
@@ -235,16 +234,13 @@ async def _handle_resume_pick(
         await query.answer("Session provider mismatch", show_alert=True)
         return
 
-    launch_args = get_provider_for_window(
-        old_wid, provider_name=provider_name
-    ).make_launch_args(resume_id=session_id)
     await _create_and_bind_window(
         query,
         user_id,
         thread_id,
         cwd,
         context,
-        agent_args=launch_args,
+        resume_id=session_id,
         success_label=f"Resuming session: {picked['summary'][:40]}",
         old_window_id=old_wid,
         provider_name=provider_name,

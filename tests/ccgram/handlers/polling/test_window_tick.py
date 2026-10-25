@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import inspect
 from contextlib import contextmanager
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
@@ -7,6 +8,8 @@ import pytest
 from telegram import Bot
 from telegram.error import TelegramError
 
+from ccgram.event_stream_monitor import EventStreamMonitor
+from ccgram.multiplexer.base import MuxEvent
 from ccgram.handlers.polling import window_tick
 from ccgram.handlers.polling.polling_state import (
     interactive_strategy,
@@ -73,7 +76,7 @@ class TestTickWindowDeadWindow:
         with patch.object(
             window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
         ) as mock_dead:
-            await tick_window(bot, 1, 100, "@0", None)
+            await tick_window(bot, 1, 100, "@0", None, MagicMock())
             mock_dead.assert_called_once()
             args, kwargs = mock_dead.call_args
             assert args == (bot, 1, 100, "@0")
@@ -91,7 +94,7 @@ class TestTickWindowDeadWindow:
                 window_tick, "_scan_window_panes", new_callable=AsyncMock
             ) as mock_scan,
         ):
-            await tick_window(bot, 1, 100, "@0", None)
+            await tick_window(bot, 1, 100, "@0", None, MagicMock())
             mock_status.assert_not_called()
             mock_scan.assert_not_called()
 
@@ -101,29 +104,26 @@ class TestTickWindowDeadWindow:
         with patch.object(
             window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
         ) as mock_dead:
-            await tick_window(bot, 1, 100, "@0", None)
+            await tick_window(bot, 1, 100, "@0", None, MagicMock())
             mock_dead.assert_not_called()
 
     async def test_agent_exit_kills_managed_window_and_enters_recovery(self):
         bot = AsyncMock(spec=Bot)
         window = _make_window()
+        adapter = MagicMock()
+        adapter.close = AsyncMock(return_value=(True, "closed"))
         with (
             patch.object(
                 window_tick,
                 "discover_and_register_transcript",
                 new_callable=AsyncMock,
                 return_value=True,
-            ),
+            ) as mock_discover,
             patch.object(
                 window_tick.lifecycle_state,
                 "get_origin",
                 return_value="ccgram_created",
             ),
-            patch.object(
-                window_tick,
-                "tmux_manager",
-                MagicMock(kill_window=AsyncMock()),
-            ) as mock_tmux,
             patch.object(
                 window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
             ) as mock_dead,
@@ -131,9 +131,10 @@ class TestTickWindowDeadWindow:
                 window_tick, "_update_status", new_callable=AsyncMock
             ) as mock_status,
         ):
-            await tick_window(bot, 1, 100, "@0", window)
+            await tick_window(bot, 1, 100, "@0", window, adapter)
 
-        mock_tmux.kill_window.assert_awaited_once_with("@0")
+        adapter.close.assert_awaited_once_with("@0")
+        assert mock_discover.call_args.kwargs["adapter"] is adapter
         mock_dead.assert_awaited_once_with(
             bot, 1, 100, "@0", runtime=window_tick.get_default_runtime()
         )
@@ -142,6 +143,8 @@ class TestTickWindowDeadWindow:
     async def test_agent_exit_keeps_manually_discovered_window(self):
         bot = AsyncMock(spec=Bot)
         window = _make_window()
+        adapter = MagicMock()
+        adapter.close = AsyncMock(return_value=(True, "closed"))
         with (
             patch.object(
                 window_tick,
@@ -155,17 +158,12 @@ class TestTickWindowDeadWindow:
                 return_value="manual_discovered",
             ),
             patch.object(
-                window_tick,
-                "tmux_manager",
-                MagicMock(kill_window=AsyncMock()),
-            ) as mock_tmux,
-            patch.object(
                 window_tick, "_handle_dead_window_notification", new_callable=AsyncMock
             ) as mock_dead,
         ):
-            await tick_window(bot, 1, 100, "@0", window)
+            await tick_window(bot, 1, 100, "@0", window, adapter)
 
-        mock_tmux.kill_window.assert_not_awaited()
+        adapter.close.assert_not_awaited()
         mock_dead.assert_awaited_once()
 
 
@@ -194,7 +192,7 @@ class TestTickWindowPendingQueue:
                 window_tick, "_maybe_check_passive_shell", new_callable=AsyncMock
             ) as mock_shell,
         ):
-            await tick_window(bot, 1, 100, "@0", w)
+            await tick_window(bot, 1, 100, "@0", w, MagicMock())
             mock_interactive.assert_called_once()
             mock_status.assert_not_called()
             mock_scan.assert_called_once()
@@ -223,7 +221,7 @@ class TestTickWindowEmptyQueue:
                 window_tick, "_maybe_check_passive_shell", new_callable=AsyncMock
             ) as mock_shell,
         ):
-            await tick_window(bot, 1, 100, "@0", w)
+            await tick_window(bot, 1, 100, "@0", w, MagicMock())
             mock_status.assert_called_once()
             mock_scan.assert_called_once()
             mock_shell.assert_called_once()
@@ -245,7 +243,7 @@ class TestTickWindowEmptyQueue:
                 window_tick, "_maybe_check_passive_shell", new_callable=AsyncMock
             ),
         ):
-            await tick_window(bot, 1, 100, "@0", w)
+            await tick_window(bot, 1, 100, "@0", w, MagicMock())
             mock_status.assert_called_once()
 
 
@@ -823,6 +821,49 @@ class TestDeadWindowTopicDeleted:
 
         presence.assert_awaited_once()
         bot.delete_forum_topic.assert_awaited_once()
+
+    async def test_concurrent_push_and_poll_share_death_guard(self):
+        bot = AsyncMock(spec=Bot)
+        router = ThreadRouter(
+            schedule_save=lambda: None,
+            has_window_state=lambda _window_id: False,
+        )
+        router.bind_thread(1, 100, "@0", chat_id=42)
+        probing = asyncio.Event()
+        release = asyncio.Event()
+
+        async def presence(*_args):
+            probing.set()
+            await release.wait()
+            return False
+
+        async def on_window_died(wid):
+            await _handle_dead_window_notification(bot, 1, 100, wid)
+
+        monitor = EventStreamMonitor(lambda: {"@0"}, on_window_died=on_window_died)
+        with (
+            patch("ccgram.handlers.polling.window_tick.apply.thread_router", router),
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.window_presence",
+                side_effect=presence,
+            ),
+            patch(
+                "ccgram.handlers.polling.window_tick.apply.retire_topic_binding",
+                new_callable=AsyncMock,
+                return_value="deleted",
+            ) as retire_binding,
+        ):
+            push = asyncio.create_task(monitor._dispatch(MuxEvent("window_died", "@0")))
+            try:
+                await asyncio.wait_for(probing.wait(), timeout=1)
+                await _handle_dead_window_notification(bot, 1, 100, "@0")
+            finally:
+                release.set()
+                await push
+
+        retire_binding.assert_awaited_once()
+        assert retire_binding.await_args is not None
+        assert retire_binding.await_args.kwargs["chat_id"] == 42
 
     async def test_same_window_in_two_chats_deletes_each_binding(self):
         bot = AsyncMock(spec=Bot)

@@ -1,5 +1,7 @@
 """An exited agent remains recoverable without logging on every poll."""
 
+from unittest.mock import MagicMock
+
 import pytest
 from structlog.testing import capture_logs
 
@@ -26,7 +28,9 @@ async def test_repeated_shell_polls_preserve_recovery_without_log_spam(
 
     with capture_logs() as logs:
         results = [
-            await discover_and_register_transcript(window_id, _window=window)
+            await discover_and_register_transcript(
+                window_id, _window=window, adapter=MagicMock()
+            )
             for _ in range(3)
         ]
 

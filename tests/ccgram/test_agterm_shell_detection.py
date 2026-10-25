@@ -1,7 +1,7 @@
 """Reported shell identity is not evidence that agterm is at an idle prompt."""
 
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -23,10 +23,13 @@ async def test_markerless_shell_does_not_cancel_local_input(monkeypatch, pane_te
     monkeypatch.setattr(shell_commands, "tmux_manager", mux)
     monkeypatch.setattr(mux, "capture_pane", AsyncMock(return_value=pane_text))
     send_keys = AsyncMock()
-    monkeypatch.setattr(mux, "send_keys", send_keys)
     monkeypatch.setattr(shell_commands.asyncio, "sleep", AsyncMock())
+    adapter = MagicMock()
+    adapter.send_keys = send_keys
 
-    await shell_commands._cancel_stuck_input(SESSION)
+    await shell_commands._cancel_stuck_input(
+        SESSION, adapter, "test:cancel-stuck-input"
+    )
 
     send_keys.assert_not_awaited()
 
@@ -118,10 +121,17 @@ async def test_unsupported_prompt_setup_does_not_offer_an_unusable_keyboard(
     monkeypatch.setattr("ccgram.multiplexer.multiplexer", mux)
     monkeypatch.setattr("ccgram.multiplexer.get_active_multiplexer", lambda: mux)
     client = AsyncMock()
+    adapter = AsyncMock()
     await ensure_setup(
-        SESSION, "provider_switch", client=client, chat_id=-871, thread_id=871
+        SESSION,
+        "provider_switch",
+        adapter=adapter,
+        client=client,
+        chat_id=-871,
+        thread_id=871,
     )
     client.send_message.assert_not_awaited()
+    adapter.setup_prompt.assert_not_awaited()
 
 
 async def test_shell_hint_never_injects_prompt_setup_into_a_possible_builtin(
@@ -130,10 +140,10 @@ async def test_shell_hint_never_injects_prompt_setup_into_a_possible_builtin(
     mux = manager({"foregroundShell": "fish"})
     monkeypatch.setattr("ccgram.multiplexer.multiplexer", mux)
     monkeypatch.setattr("ccgram.multiplexer.get_active_multiplexer", lambda: mux)
-    send = AsyncMock()
+    adapter = AsyncMock()
     capture = AsyncMock(return_value="read> ")
 
-    await setup_shell_prompt(SESSION, send_keys_fn=send, capture_fn=capture)
+    await setup_shell_prompt(SESSION, adapter=adapter, capture_fn=capture)
 
-    send.assert_not_awaited()
+    adapter.setup_prompt.assert_not_awaited()
     capture.assert_not_awaited()

@@ -12,7 +12,7 @@ Two prompt modes for output isolation and exit code detection:
   (the legacy behaviour, opt-in via ``CCGRAM_PROMPT_MODE=replace``).
 """
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from ccgram.providers._jsonl import JsonlProvider
 from ccgram.providers.base import ProviderCapabilities
@@ -51,19 +51,6 @@ class ShellProvider(JsonlProvider):
         use_continue: bool = False,  # noqa: ARG002
     ) -> str:
         return ""
-
-    def parse_transcript_line(
-        self,
-        line: str,  # noqa: ARG002
-    ) -> dict[str, Any] | None:
-        return None
-
-    def read_transcript_file(
-        self,
-        file_path: str,  # noqa: ARG002
-        last_offset: int,  # noqa: ARG002
-    ) -> tuple[list[dict[str, Any]], int]:
-        return [], 0
 
     def extract_bash_output(
         self,

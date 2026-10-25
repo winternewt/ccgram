@@ -589,7 +589,7 @@ class TestProbeFailures:
         bot = AsyncMock(spec=Bot)
         with patch("ccgram.handlers.topics.topic_lifecycle.thread_router") as mock_tr:
             mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
-            await probe_topic_existence(bot)
+            await probe_topic_existence(bot, MagicMock())
         bot.unpin_all_forum_topic_messages.assert_not_called()
 
     async def test_probe_retries_after_suspension_expires(self) -> None:
@@ -613,7 +613,7 @@ class TestProbeFailures:
         ):
             mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
             mock_tr.resolve_chat_id.return_value = -100
-            await probe_topic_existence(bot)
+            await probe_topic_existence(bot, MagicMock())
 
         bot.unpin_all_forum_topic_messages.assert_not_called()
 
@@ -631,7 +631,7 @@ class TestProbeFailures:
         ):
             mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
             mock_tr.resolve_chat_id.return_value = -100
-            await probe_topic_existence(bot)
+            await probe_topic_existence(bot, MagicMock())
 
         bot.unpin_all_forum_topic_messages.assert_awaited_once_with(
             chat_id=-100,
@@ -647,7 +647,7 @@ class TestProbeFailures:
         with patch("ccgram.handlers.topics.topic_lifecycle.thread_router") as mock_tr:
             mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
             mock_tr.resolve_chat_id.return_value = -100
-            await probe_topic_existence(bot)
+            await probe_topic_existence(bot, MagicMock())
         assert (
             _window_poll_state.get("@5") is None
             or _window_poll_state["@5"].probe_failures == 0
@@ -671,7 +671,7 @@ class TestProbeFailures:
         with patch("ccgram.handlers.topics.topic_lifecycle.thread_router") as mock_tr:
             mock_tr.iter_thread_bindings.return_value = [(1, 42, "@5")]
             mock_tr.resolve_chat_id.return_value = -100
-            await probe_topic_existence(bot)
+            await probe_topic_existence(bot, MagicMock())
         assert _window_poll_state["@5"].probe_failures == 1
 
     async def test_probe_suspends_after_max_failures(self) -> None:
@@ -683,7 +683,7 @@ class TestProbeFailures:
             for _ in range(MAX_PROBE_FAILURES + 1):
                 # Stands in for PROBE_INTERVAL elapsing between poll cycles.
                 reset_probe_schedule()
-                await probe_topic_existence(bot)
+                await probe_topic_existence(bot, MagicMock())
         assert bot.unpin_all_forum_topic_messages.call_count == MAX_PROBE_FAILURES
         assert _window_poll_state["@5"].probe_failures == MAX_PROBE_FAILURES
 
@@ -714,7 +714,7 @@ class TestProbeFailures:
                 return_value=mock_window if window_alive else None
             )
             mock_tm.kill_window = AsyncMock()
-            await probe_topic_existence(bot)
+            await probe_topic_existence(bot, MagicMock())
         mock_tm.kill_window.assert_not_called()
         mock_cleanup.assert_called_once_with(1, 42, bot, window_id="@5", chat_id=-100)
         mock_tr.unbind_thread.assert_called_once_with(
@@ -788,7 +788,11 @@ class TestProviderSwitchPromptSetup:
                 return_value=MagicMock(pane_current_command=pane_command, cwd="/proj")
             )
             exited = await discover_and_register_transcript(
-                "@7", client=bot, user_id=1, thread_id=42
+                "@7",
+                client=bot,
+                user_id=1,
+                thread_id=42,
+                adapter=MagicMock(),
             )
 
         assert exited is True
@@ -838,7 +842,11 @@ class TestProviderSwitchPromptSetup:
                 return_value=MagicMock(pane_current_command="claude", cwd="/proj")
             )
             await discover_and_register_transcript(
-                "@7", client=bot, user_id=1, thread_id=42
+                "@7",
+                client=bot,
+                user_id=1,
+                thread_id=42,
+                adapter=MagicMock(),
             )
 
         mock_ensure.assert_not_awaited()
@@ -884,7 +892,11 @@ class TestProviderSwitchPromptSetup:
             mock_tmux.get_pane_title = AsyncMock(return_value="")
             mock_config.return_value = "ccgram:"
             await discover_and_register_transcript(
-                "@7", client=bot, user_id=1, thread_id=42
+                "@7",
+                client=bot,
+                user_id=1,
+                thread_id=42,
+                adapter=MagicMock(),
             )
 
         mock_sm.set_window_provider.assert_called_once_with("@7", "shell")
@@ -934,7 +946,7 @@ class TestProviderSwitchPromptSetup:
             )
             mock_tmux.get_pane_title = AsyncMock(return_value="")
             mock_config.return_value = "ccgram:"
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         mock_ensure.assert_awaited_once()
         assert mock_ensure.call_args[0] == ("@7", "provider_switch")
@@ -1030,7 +1042,11 @@ class TestProviderSwitchChain:
                 )
             )
             await discover_and_register_transcript(
-                "@7", client=bot, user_id=1, thread_id=42
+                "@7",
+                client=bot,
+                user_id=1,
+                thread_id=42,
+                adapter=MagicMock(),
             )
             assert state.provider_name == "shell"
             assert state.transcript_path == ""
@@ -1048,7 +1064,11 @@ class TestProviderSwitchChain:
                 )
             )
             await discover_and_register_transcript(
-                "@7", client=bot, user_id=1, thread_id=42
+                "@7",
+                client=bot,
+                user_id=1,
+                thread_id=42,
+                adapter=MagicMock(),
             )
             assert state.provider_name == "gemini"
             mock_clear_capture.assert_called_once_with("@7")
@@ -1064,7 +1084,11 @@ class TestProviderSwitchChain:
                 )
             )
             await discover_and_register_transcript(
-                "@7", client=bot, user_id=1, thread_id=42
+                "@7",
+                client=bot,
+                user_id=1,
+                thread_id=42,
+                adapter=MagicMock(),
             )
             assert state.provider_name == "shell"
             assert state.transcript_path == ""
@@ -1120,7 +1144,7 @@ class TestMaybeDiscoverTranscript:
             )
             mock_tmux.get_pane_title = AsyncMock(return_value="")
             mock_config.return_value = "ccgram:"
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         mock_sm.register_hookless_session.assert_not_called()
         mock_sm.write_hookless_session_map.assert_not_called()
@@ -1138,10 +1162,14 @@ class TestMaybeDiscoverTranscript:
             patch(
                 "ccgram.handlers.recovery.transcript_discovery.tmux_manager"
             ) as mock_tmux,
+            patch(
+                "ccgram.handlers.shell.shell_prompt_orchestrator.ensure_setup",
+                new_callable=AsyncMock,
+            ),
         ):
             mock_ws.window_states = {"@7": MagicMock(session_id="", cwd="")}
             mock_tmux.find_window_by_id = AsyncMock(return_value=None)
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
         mock_sm.register_hookless_session.assert_not_called()
 
     async def test_falls_back_to_tmux_cwd_when_state_cwd_empty(self) -> None:
@@ -1188,7 +1216,7 @@ class TestMaybeDiscoverTranscript:
             mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
             mock_tmux.get_pane_title = AsyncMock(return_value="")
             mock_config.return_value = "ccgram:"
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         mock_sm.set_window_provider.assert_called_once_with(
             "@7", "codex", cwd="/my/project"
@@ -1215,7 +1243,7 @@ class TestMaybeDiscoverTranscript:
             mock_ws.window_states = {
                 "@7": MagicMock(session_id="", cwd="/proj", provider_name="claude")
             }
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
         mock_sm.register_hookless_session.assert_not_called()
 
     async def test_skips_when_window_not_tracked(self) -> None:
@@ -1230,7 +1258,7 @@ class TestMaybeDiscoverTranscript:
             patch("ccgram.window_state_ports.identity_state.window_store") as mock_ws,  # noqa: F841
         ):
             mock_ws.window_states = {}
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
         mock_sm.register_hookless_session.assert_not_called()
 
     async def test_registers_when_transcript_found(self) -> None:
@@ -1269,6 +1297,10 @@ class TestMaybeDiscoverTranscript:
             patch(
                 "ccgram.handlers.recovery.transcript_discovery.tmux_manager"
             ) as mock_tmux,
+            patch(
+                "ccgram.handlers.shell.shell_prompt_orchestrator.ensure_setup",
+                new_callable=AsyncMock,
+            ),
         ):
             mock_ws.window_states = {
                 "@7": MagicMock(session_id="", cwd="/my/project", provider_name="codex")
@@ -1277,7 +1309,7 @@ class TestMaybeDiscoverTranscript:
             mock_window = MagicMock(pane_current_command="bun")
             mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
             mock_tmux.get_pane_title = AsyncMock(return_value="")
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         mock_sms.register_hookless_session.assert_called_once_with(
             window_id="@7",
@@ -1353,7 +1385,7 @@ class TestMaybeDiscoverTranscript:
                 return_value=MagicMock(pane_current_command="bun")
             )
             mock_tmux.get_pane_title = AsyncMock(return_value="")
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         mock_sms.register_hookless_session.assert_not_called()
         mock_sms.write_hookless_session_map.assert_not_called()
@@ -1408,7 +1440,7 @@ class TestMaybeDiscoverTranscript:
                 return_value=MagicMock(pane_current_command="bun")
             )
             mock_tmux.get_pane_title = AsyncMock(return_value="")
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         mock_sms.register_hookless_session.assert_called_once_with(
             window_id="@7",
@@ -1452,7 +1484,7 @@ class TestMaybeDiscoverTranscript:
                 return_value=MagicMock(pane_current_command="bun")
             )
             mock_tmux.get_pane_title = AsyncMock(return_value="")
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         mock_sm.register_hookless_session.assert_not_called()
         mock_sm.write_hookless_session_map.assert_not_called()
@@ -1505,7 +1537,7 @@ class TestMaybeDiscoverTranscript:
             mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
             mock_tmux.get_pane_title = AsyncMock(return_value="")
             mock_asyncio.to_thread = AsyncMock(side_effect=[event, None])
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         assert mock_asyncio.to_thread.call_count == 2
         discover_call = mock_asyncio.to_thread.call_args_list[0]
@@ -1577,7 +1609,7 @@ class TestMaybeDiscoverTranscript:
             mock_config.return_value = "ccgram:"
             mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
             mock_tmux.get_pane_title = AsyncMock(return_value="")
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         mock_sms.register_hookless_session.assert_called_once_with(
             window_id="@7",
@@ -1662,7 +1694,7 @@ class TestMaybeDiscoverTranscript:
                 return_value=MagicMock(pane_current_command="bun")
             )
             mock_tmux.get_pane_title = AsyncMock(return_value="")
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         mock_codex.discover_transcript.assert_called_once()
         mock_gemini.discover_transcript.assert_called_once()
@@ -1689,12 +1721,16 @@ class TestMaybeDiscoverTranscript:
             patch(
                 "ccgram.handlers.recovery.transcript_discovery.tmux_manager"
             ) as mock_tmux,
+            patch(
+                "ccgram.handlers.shell.shell_prompt_orchestrator.ensure_setup",
+                new_callable=AsyncMock,
+            ),
         ):
             mock_ws.window_states = {
                 "@7": MagicMock(session_id="", cwd="/proj", provider_name="")
             }
             mock_tmux.find_window_by_id = AsyncMock(return_value=mock_window)
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         mock_sm.register_hookless_session.assert_not_called()
 
@@ -1737,7 +1773,7 @@ class TestMaybeDiscoverTranscript:
             )
             mock_tmux.get_pane_title = AsyncMock(return_value="")
             mock_asyncio.to_thread = AsyncMock(return_value=None)
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         discover_call = mock_asyncio.to_thread.call_args_list[0]
         assert discover_call.args[0] == mock_provider.discover_transcript
@@ -1779,7 +1815,7 @@ class TestMaybeDiscoverTranscript:
             mock_config.return_value = "ccgram:"
             mock_tmux.find_window_by_id = AsyncMock(return_value=None)
             mock_asyncio.to_thread = AsyncMock(return_value=None)
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         discover_call = mock_asyncio.to_thread.call_args_list[0]
         assert discover_call.args[0] == mock_provider.discover_transcript
@@ -1850,6 +1886,7 @@ class TestMaybeDiscoverTranscript:
                         pane_tty="/dev/ttys007",
                         cwd="/proj",
                     ),
+                    adapter=MagicMock(),
                 )
         finally:
             _pgid_cache.clear()
@@ -1929,6 +1966,7 @@ class TestMaybeDiscoverTranscript:
                         pane_tty="/dev/ttys007",
                         cwd="/proj",
                     ),
+                    adapter=MagicMock(),
                 )
         finally:
             _pgid_cache.clear()
@@ -2014,7 +2052,7 @@ class TestMaybeDiscoverTranscript:
             )
             mock_tmux.get_pane_title = AsyncMock(return_value="◇  Ready (ccgram)")
             mock_config.return_value = "ccgram:"
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         mock_codex.discover_transcript.assert_not_called()
         mock_gemini.discover_transcript.assert_called_once()
@@ -2112,7 +2150,7 @@ class TestMaybeDiscoverTranscript:
                 )
             )
             mock_config.return_value = "ccgram:"
-            await discover_and_register_transcript("@7")
+            await discover_and_register_transcript("@7", adapter=MagicMock())
 
         mock_sm.set_window_provider.assert_called_once_with(
             "@7",
@@ -2186,7 +2224,7 @@ class TestDeadWindowNotification:
             mock_tr.resolve_chat_id.return_value = -100
             mock_tm.find_window_by_id = AsyncMock(return_value=mock_window)
             mock_tm.kill_window = AsyncMock()
-            await probe_topic_existence(bot)
+            await probe_topic_existence(bot, MagicMock())
 
         mock_tm.kill_window.assert_not_called()
         mock_cleanup.assert_called_once_with(1, 42, bot, window_id="@5", chat_id=-100)

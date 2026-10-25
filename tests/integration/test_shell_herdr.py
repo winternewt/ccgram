@@ -37,6 +37,10 @@ from ccgram.multiplexer import (
     multiplexer,
 )
 from ccgram.multiplexer.herdr import HerdrError, HerdrManager
+from ccgram.session_protocol.backend import MultiplexerSessionBackend
+from ccgram.session_protocol.service import LocalSessionService
+from ccgram.session_protocol.store import ProtocolStore
+from ccgram.session_protocol.telegram import TelegramSessionAdapter
 from ccgram.providers.process_detection import (
     classify_provider_from_argv,
     detect_provider_cached,
@@ -86,11 +90,18 @@ async def herdr_shell(tmp_path):
         _reset_multiplexer_for_testing()
         pytest.skip("herdr could not create a shell pane")
 
+    store = ProtocolStore(tmp_path / "session-protocol.sqlite3")
+    adapter = TelegramSessionAdapter(
+        LocalSessionService(
+            MultiplexerSessionBackend(multiplexer, str(tmp_path)), store
+        )
+    )
     try:
-        yield mgr, window_id
+        yield mgr, window_id, adapter
     finally:
         await mgr.kill_window(window_id)
         _reset_multiplexer_for_testing()
+        store.close()
 
 
 async def _poll(
@@ -119,7 +130,7 @@ async def _marker_within(window_id: str, timeout: float) -> bool:
     return False
 
 
-async def _setup_shell_marker(window_id: str) -> None:
+async def _setup_shell_marker(window_id: str, adapter: TelegramSessionAdapter) -> None:
     """Install the prompt marker via the real entry point, racing shell init.
 
     A freshly created pane is still sourcing its rc file (config.fish here),
@@ -129,7 +140,7 @@ async def _setup_shell_marker(window_id: str) -> None:
     gets for free in production.
     """
     for _ in range(5):
-        await setup_shell_prompt(window_id)
+        await setup_shell_prompt(window_id, adapter=adapter)
         if await _marker_within(window_id, timeout=2.5):
             return
     cap = await multiplexer.capture_pane(window_id)
@@ -140,7 +151,7 @@ async def _setup_shell_marker(window_id: str) -> None:
 
 async def test_shell_classified_from_herdr_process_info_not_tty(herdr_shell) -> None:
     """Shell-vs-agent classification uses herdr foreground data, never a tty."""
-    mgr, window_id = herdr_shell
+    mgr, window_id, _adapter = herdr_shell
 
     fg = await multiplexer.foreground(window_id)
     assert fg is not None
@@ -167,10 +178,10 @@ async def test_shell_flow_marker_run_isolation_exit_interrupt_clear(
     herdr_shell,
 ) -> None:
     """PS1 setup → run → isolation → exit code → C-c → clear over herdr."""
-    _, window_id = herdr_shell
+    _, window_id, adapter = herdr_shell
 
     # 1. PS1 marker setup through the real shell-provider entry point.
-    await _setup_shell_marker(window_id)
+    await _setup_shell_marker(window_id, adapter)
 
     # 2. Run a command (the post-approval send path) and isolate its output
     #    via prompt markers; exit code 0 is detected from the bare prompt.
@@ -205,7 +216,7 @@ async def test_shell_flow_marker_run_isolation_exit_interrupt_clear(
 
 async def test_shell_scrollback_clamp_surfaces_truncation(herdr_shell) -> None:
     """A >1000-line capture clamps to herdr's cap and surfaces ``truncated``."""
-    _, window_id = herdr_shell
+    _, window_id, _adapter = herdr_shell
 
     # Emit more lines than herdr's 1000-line read cap so the pane genuinely has
     # scrollback to clip. A freshly created pane is otherwise near-empty, and an

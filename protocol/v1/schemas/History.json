@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ccgram.dev/protocol/v1/schemas/History.json",
+  "title": "History",
+  "type": "object",
+  "properties": {
+    "conversation": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "messages": {
+      "type": "array",
+      "items": {
+        "$ref": "Message.json"
+      }
+    },
+    "prevCursor": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "historyLimit": {
+      "type": "string",
+      "enum": [
+        "full",
+        "scrollback"
+      ]
+    },
+    "historyGeneration": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "conversation",
+    "messages",
+    "prevCursor",
+    "historyLimit"
+  ],
+  "additionalProperties": true
+}

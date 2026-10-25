@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ccgram.dev/protocol/v1/schemas/PairingResult.json",
+  "title": "PairingResult",
+  "type": "object",
+  "properties": {
+    "deviceId": {
+      "type": "string"
+    },
+    "deviceToken": {
+      "type": "string"
+    },
+    "fingerprint": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "deviceId",
+    "deviceToken",
+    "fingerprint"
+  ],
+  "additionalProperties": true
+}

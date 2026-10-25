@@ -14,6 +14,7 @@ from ccgram.handlers.messaging_pipeline import message_queue
 from ccgram.providers.pi import PiProvider
 from ccgram.window_state_ports import identity_state
 from ccgram.transcript_reader import _StartupBoundary, _prefix_digest
+from ccgram.session_protocol.messages import SourceEntry
 from ccgram.window_state_store import (
     WindowState,
     WindowStateStore,
@@ -111,22 +112,17 @@ def test_transcript_delivery_obeys_manual_provider(
     selected.provider_name = chosen
     monkeypatch.setattr(config, "monitor_state_file", tmp_path / "monitor.json")
     provider = PiProvider()
-    entry = provider.parse_transcript_line(
-        json.dumps(
-            {
-                "type": "message",
-                "message": {
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": "live reply"}],
-                },
-            }
-        )
-    )
-    assert entry is not None
+    entry = {
+        "type": "message",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "live reply"}],
+        },
+    }
     messages = []
     SessionMonitor()._transcript_reader._append_provider_messages(
         "hook-session",
-        [entry],
+        [SourceEntry(0, entry)],
         provider,
         {},
         WINDOW,

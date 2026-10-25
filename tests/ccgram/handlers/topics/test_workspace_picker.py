@@ -7,6 +7,7 @@ The chosen workspace id then has to survive all the way to window creation.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -67,6 +68,7 @@ def _make_query() -> AsyncMock:
 def _make_context(user_data: dict | None = None) -> MagicMock:
     ctx = MagicMock()
     ctx.user_data = user_data if user_data is not None else {}
+    ctx.bot_data = {}
     ctx.bot = AsyncMock()
     ctx.bot.edit_forum_topic = AsyncMock()
     return ctx
@@ -297,6 +299,7 @@ class TestWorkspaceIdThreaded:
 
         with (
             patch(f"{module}tmux_manager") as mock_mux,
+            patch(f"{module}adapter_for") as mock_adapter_for,
             patch(f"{module}session_manager"),
             patch(f"{module}thread_router") as mock_tr,
             patch(f"{module}topic_orchestration"),
@@ -306,13 +309,23 @@ class TestWorkspaceIdThreaded:
             patch(f"{module}provider_registry") as mock_reg,
             patch("ccgram.providers.resolve_launch_command", return_value="claude"),
         ):
-            mock_mux.create_window = AsyncMock(
-                return_value=(True, "ok", "my-tab", "w1:t1")
+            adapter = mock_adapter_for.return_value
+            adapter.create = AsyncMock(
+                return_value=SimpleNamespace(
+                    target_id="w1:t1",
+                    title="my-tab",
+                    session=SimpleNamespace(title="my-tab"),
+                )
+            )
+            adapter.resolve = AsyncMock(
+                return_value=(
+                    SimpleNamespace(
+                        foreground_argv=("claude",), provider="claude", available=True
+                    ),
+                    None,
+                )
             )
             mock_mux.stamp_pane_title = AsyncMock()
-            mock_mux.find_window_by_id = AsyncMock(
-                return_value=MagicMock(pane_current_command="claude")
-            )
             mock_mux.capabilities.native_worktrees = False
             mock_mux.capabilities.native_agent_status = False
             mock_tr.get_window_for_thread.return_value = None
@@ -337,8 +350,7 @@ class TestWorkspaceIdThreaded:
                 ),
             )
 
-        mock_mux.create_window.assert_awaited_once()
+        adapter.create.assert_awaited_once()
         assert (
-            mock_mux.create_window.call_args.kwargs.get("workspace_id")
-            == chosen_workspace_id
+            adapter.create.call_args.args[0].get("workspaceId") == chosen_workspace_id
         )

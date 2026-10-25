@@ -168,19 +168,19 @@ def _make_context() -> MagicMock:
 
 @contextmanager
 def _owned_window(*, window_id: str | None = "@5"):
-    """Patch ownership + the multiplexer; yield the tmux mock.
-
-    ``window_id=None`` makes ``find_window_by_id`` report a dead window.
-    """
+    """Patch ownership + the protocol adapter; yield the adapter mock."""
+    adapter = MagicMock()
+    adapter.send_keys = AsyncMock(
+        return_value=(window_id is not None, "Window not found")
+    )
+    adapter.send_text = AsyncMock(
+        return_value=(window_id is not None, "Window not found")
+    )
     with (
         patch(f"{_CB}.user_owns_window", return_value=True),
-        patch(f"{_CB}.tmux_manager") as mock_tmux,
+        patch("ccgram.session_protocol.telegram.adapter_for", return_value=adapter),
     ):
-        mock_tmux.find_window_by_id = AsyncMock(
-            return_value=MagicMock(window_id=window_id) if window_id else None
-        )
-        mock_tmux.send_keys = AsyncMock()
-        yield mock_tmux
+        yield adapter
 
 
 async def _dispatch(data: str, *, context: MagicMock | None = None) -> AsyncMock:
@@ -199,33 +199,29 @@ async def _dispatch(data: str, *, context: MagicMock | None = None) -> AsyncMock
 
 class TestDispatchKey:
     async def test_key_action_sends_tmux_key(self) -> None:
-        with _owned_window() as mock_tmux:
+        with _owned_window() as adapter:
             query = await _dispatch("tb:@5:esc")
-        mock_tmux.send_keys.assert_awaited_once_with(
-            "@5", "Escape", enter=False, literal=False
-        )
+        adapter.send_keys.assert_awaited_once_with("@5", ["Escape"], action_id=ANY)
         query.answer.assert_awaited_once()
 
     async def test_mode_action_uses_literal_true(self) -> None:
         with (
-            _owned_window() as mock_tmux,
+            _owned_window() as adapter,
             patch(
                 f"{_CB}.refresh_button_label",
                 new=AsyncMock(return_value="Edit"),
             ),
         ):
             query = await _dispatch("tb:@5:mode")
-        mock_tmux.send_keys.assert_awaited_once_with(
-            "@5", "\x1b[Z", enter=False, literal=True
+        adapter.send_text.assert_awaited_once_with(
+            "@5", "\x1b[Z", submit=False, action_id=ANY
         )
         query.answer.assert_awaited_once_with("\U0001f500 Edit")
 
     async def test_ctrlc_action_sends_interrupt(self) -> None:
-        with _owned_window() as mock_tmux:
+        with _owned_window() as adapter:
             await _dispatch("tb:@5:ctrlc")
-        mock_tmux.send_keys.assert_awaited_once_with(
-            "@5", "C-c", enter=False, literal=False
-        )
+        adapter.send_keys.assert_awaited_once_with("@5", ["C-c"], action_id=ANY)
 
     async def test_window_not_found_alerts(self) -> None:
         with _owned_window(window_id=None):
@@ -259,7 +255,7 @@ class TestDispatchText:
         self, clear_action_config: ToolbarConfig
     ) -> None:
         with (
-            _owned_window(),
+            _owned_window() as adapter,
             patch(f"{_CB}.get_toolbar_config", return_value=clear_action_config),
             patch(f"{_CB}.get_thread_id", return_value=42),
             patch(
@@ -269,7 +265,15 @@ class TestDispatchText:
             ) as mock_send,
         ):
             query = await _dispatch("tb:@5:clear")
-        mock_send.assert_awaited_once_with(100, "@5", 42, "/clear", ANY)
+        mock_send.assert_awaited_once_with(
+            100,
+            "@5",
+            42,
+            "/clear",
+            ANY,
+            adapter=adapter,
+            action_id=ANY,
+        )
         query.answer.assert_awaited_once()
 
     async def test_text_action_reports_send_failure(

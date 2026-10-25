@@ -96,7 +96,7 @@ from .window_launch_service import (
     _persist_worktree_state,
     launch_window as _create_window_and_bind,
 )
-from .worktree import (
+from ...worktrees import (
     WorktreeError,
     check_worktree_eligibility,
     create_worktree,

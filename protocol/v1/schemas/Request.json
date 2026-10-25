@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ccgram.dev/protocol/v1/schemas/Request.json",
+  "title": "Request",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "sessionId": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "permission",
+        "question",
+        "plan",
+        "prompt"
+      ]
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "hook",
+        "screen"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "tool": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "input": {}
+          },
+          "required": [
+            "name",
+            "kind",
+            "input"
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "options": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "allow_once",
+              "allow_always",
+              "reject_once",
+              "reject_always"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "kind"
+        ],
+        "additionalProperties": true
+      }
+    },
+    "responseSchema": {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "openedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expiresAt": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "id",
+    "sessionId",
+    "kind",
+    "source",
+    "title",
+    "tool",
+    "options",
+    "responseSchema",
+    "openedAt",
+    "expiresAt"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "enum": [
+              "screen"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "options": {
+            "maxItems": 0
+          },
+          "responseSchema": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

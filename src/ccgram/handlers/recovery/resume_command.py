@@ -15,10 +15,11 @@ Key functions:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 import asyncio
 import time
 from dataclasses import dataclass
+from http import HTTPStatus
 from pathlib import Path
 
 import structlog
@@ -37,7 +38,6 @@ from ...providers import (
     is_known_provider,
     picker_capable_providers,
     providers_to_scan,
-    resolve_launch_command,
 )
 from ...providers._resume import index_message_count
 from ... import window_query
@@ -46,6 +46,8 @@ from ...session_map import session_map_sync
 from ...telegram_client import PTBTelegramClient
 from ...thread_router import thread_router
 from ...multiplexer import multiplexer as tmux_manager
+from ...session_protocol.telegram import adapter_for
+from ...session_protocol.models import ProtocolError
 from ...multiplexer.base import canonical_window_id
 from ...window_state_store import CCGRAM_CREATED_WINDOW_ORIGIN
 from ..callback_data import CB_RESUME_CANCEL, CB_RESUME_PAGE, CB_RESUME_PICK
@@ -145,7 +147,7 @@ def _follow_provisioning_supersession(window_id: str, *, claim_id: str | None) -
     return current
 
 
-async def _finish_failed_provisioning(  # noqa: C901
+async def _finish_failed_provisioning(  # noqa: C901, PLR0911, PLR0912
     *,
     claim_id: str | None,
     target_id: str | None,
@@ -168,7 +170,9 @@ async def _finish_failed_provisioning(  # noqa: C901
             topic_orchestration.clear_pending_creation(target_id)
             return True
         try:
-            absent = await tmux_manager.kill_window(target_id)
+            if context is None:
+                return False
+            absent, _ = await adapter_for(context.bot_data).close(target_id)
         except BaseException:  # noqa: BLE001
             return False
         if absent:
@@ -186,7 +190,12 @@ async def _finish_failed_provisioning(  # noqa: C901
         target_confirmed_absent = True
     else:
         try:
-            target_confirmed_absent = await tmux_manager.kill_window(target_id)
+            if context is None:
+                _mark_provisioning_uncertain(claim_id)
+                return False
+            target_confirmed_absent, _ = await adapter_for(context.bot_data).close(
+                target_id
+            )
         except BaseException:  # noqa: BLE001
             _mark_provisioning_uncertain(claim_id)
             return False
@@ -513,7 +522,9 @@ async def _create_resume_window(  # noqa: C901, PLR0912, PLR0915
     if old_window_id is None:
         old_window_id = thread_router.get_window_for_thread(user_id, thread_id)
     old_view = window_query.view_window(old_window_id) if old_window_id else None
-    approval_mode = old_view.approval_mode if old_view else "normal"
+    approval_mode: Literal["normal", "yolo"] = (
+        "yolo" if old_view and old_view.approval_mode == "yolo" else "normal"
+    )
     provider = (
         get_provider_for_window(
             old_window_id or "", provider_name=provider_name or None
@@ -523,11 +534,6 @@ async def _create_resume_window(  # noqa: C901, PLR0912, PLR0915
     )
 
     # Validate the provider-specific session ID before changing thread state.
-    launch_args = provider.make_launch_args(resume_id=session_id)
-    launch_command = resolve_launch_command(
-        provider.capabilities.name, approval_mode=approval_mode
-    )
-
     try:
         provisioning_kwargs = {
             "thread_id": thread_id,
@@ -551,12 +557,31 @@ async def _create_resume_window(  # noqa: C901, PLR0912, PLR0915
         raise
 
     creation_was_cancelled = False
+    creation_definitive_failure = False
     try:
-        creation, creation_was_cancelled = await _await_creation_result(
-            tmux_manager.create_window(
-                cwd, agent_args=launch_args, launch_command=launch_command
+        if context is None:
+            _mark_provisioning_uncertain(claim_id)
+            return False, "Session service is unavailable", "", ""
+        created, creation_was_cancelled = await _await_creation_result(
+            adapter_for(context.bot_data).create(
+                {"provider": provider.capabilities.name, "directory": cwd},
+                approval_mode=approval_mode,
+                resume_id=session_id,
             )
         )
+        creation = (
+            True,
+            f"Resumed session '{created.title}'",
+            created.title,
+            created.target_id,
+        )
+    except ProtocolError as exc:
+        if exc.status < HTTPStatus.INTERNAL_SERVER_ERROR:
+            creation_definitive_failure = True
+            creation = (False, exc.message, "", "")
+        else:
+            _mark_provisioning_uncertain(claim_id)
+            raise
     except BaseException:  # noqa: BLE001
         _mark_provisioning_uncertain(claim_id)
         raise
@@ -586,7 +611,7 @@ async def _create_resume_window(  # noqa: C901, PLR0912, PLR0915
                 context=context,
                 failure_message=message,
             )
-        elif _is_definitive_create_failure(message):
+        elif creation_definitive_failure or _is_definitive_create_failure(message):
             await _finish_failed_provisioning(
                 claim_id=claim_id,
                 target_id=None,
@@ -596,6 +621,7 @@ async def _create_resume_window(  # noqa: C901, PLR0912, PLR0915
                 old_window_id=old_window_id,
                 context=context,
                 failure_message=message,
+                target_already_absent=creation_definitive_failure,
             )
         else:
             _mark_provisioning_uncertain(claim_id)

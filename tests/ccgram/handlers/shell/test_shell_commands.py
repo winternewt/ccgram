@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import Iterator
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 from telegram import Bot, CallbackQuery, InlineKeyboardMarkup, Message
@@ -21,8 +22,8 @@ from ccgram.handlers.shell.shell_commands import (
     _shell_hint_seen,
     _shell_pending,
     clear_shell_pending,
-    handle_shell_callback,
-    handle_shell_message,
+    handle_shell_callback as _handle_shell_callback,
+    handle_shell_message as _handle_shell_message,
     has_shell_pending,
     show_command_approval,
 )
@@ -34,6 +35,20 @@ from ccgram.providers.shell import has_prompt_marker
 
 _MOD = "ccgram.handlers.shell.shell_commands"
 _CTX = "ccgram.handlers.shell.shell_context"
+_TEST_ADAPTER = MagicMock()
+_TEST_ADAPTER.send_text = AsyncMock(return_value=(True, "Sent"))
+_TEST_ADAPTER.send_keys = AsyncMock(return_value=(True, "Sent"))
+
+
+async def handle_shell_message(*args, **kwargs):
+    kwargs.setdefault("adapter", _TEST_ADAPTER)
+    return await _handle_shell_message(*args, **kwargs)
+
+
+async def handle_shell_callback(*args, **kwargs):
+    if len(args) < 6 and "adapter" not in kwargs:
+        kwargs["adapter"] = _TEST_ADAPTER
+    return await _handle_shell_callback(*args, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +56,15 @@ def _clean_shell_state():
     _shell_pending.clear()
     _generation_counter.clear()
     _shell_hint_seen.clear()
-    yield
+    _TEST_ADAPTER.send_text.reset_mock(return_value=True, side_effect=True)
+    _TEST_ADAPTER.send_keys.reset_mock(return_value=True, side_effect=True)
+    _TEST_ADAPTER.send_text.return_value = (True, "Sent")
+    _TEST_ADAPTER.send_keys.return_value = (True, "Sent")
+    with patch(
+        "ccgram.handlers.shell.shell_prompt_orchestrator.ensure_setup",
+        new_callable=AsyncMock,
+    ):
+        yield
     _shell_pending.clear()
     _generation_counter.clear()
     _shell_hint_seen.clear()
@@ -101,14 +124,18 @@ class TestHandleShellMessage:
     async def test_bang_prefix_sends_raw_command(self) -> None:
         bot = AsyncMock(spec=Bot)
         message = AsyncMock(spec=Message)
+        message.chat.id = -100
+        message.message_id = 4242
 
         with (
             patch(f"{_MOD}.enqueue_status_update", new_callable=AsyncMock),
             patch(f"{_MOD}.lifecycle_strategy.clear_probe_failures"),
+            patch(f"{_MOD}._ensure_prompt_marker", new_callable=AsyncMock) as prompt,
             patch(f"{_CTX}.view_window"),
             patch(f"{_MOD}.tmux_manager") as mock_tm,
-            patch(
-                f"{_MOD}.send_to_window",
+            patch.object(
+                _TEST_ADAPTER,
+                "send_text",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ) as mock_send,
@@ -120,7 +147,14 @@ class TestHandleShellMessage:
             mock_tm.capture_pane = AsyncMock(return_value=None)
             await handle_shell_message(bot, 1, 42, "@0", "!ls -la", message)
 
-            mock_send.assert_called_once_with(1, "@0", 42, "ls -la", ANY, raw=True)
+            prompt.assert_awaited_once_with("@0", adapter=_TEST_ADAPTER)
+            mock_send.assert_awaited_once_with(
+                "@0",
+                "ls -la",
+                submit=True,
+                terminal_input=True,
+                action_id="telegram-message:-100:4242",
+            )
             mock_mark.assert_called_once()
             args = mock_mark.call_args.args
             assert args[:4] == ("@0", "ls -la", 1, 42)
@@ -133,8 +167,9 @@ class TestHandleShellMessage:
             patch(f"{_MOD}.enqueue_status_update", new_callable=AsyncMock),
             patch(f"{_MOD}.lifecycle_strategy.clear_probe_failures"),
             patch(f"{_CTX}.view_window"),
-            patch(
-                f"{_MOD}.send_to_window",
+            patch.object(
+                _TEST_ADAPTER,
+                "send_text",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ) as mock_send,
@@ -142,7 +177,9 @@ class TestHandleShellMessage:
         ):
             await handle_shell_message(bot, 1, 42, "@0", "! ls", message)
 
-            mock_send.assert_called_once_with(1, "@0", 42, "ls", ANY, raw=True)
+            mock_send.assert_awaited_once_with(
+                "@0", "ls", submit=True, terminal_input=True, action_id=ANY
+            )
 
     async def test_bare_bang_is_ignored(self) -> None:
         bot = AsyncMock(spec=Bot)
@@ -152,7 +189,9 @@ class TestHandleShellMessage:
             patch(f"{_MOD}.enqueue_status_update", new_callable=AsyncMock),
             patch(f"{_MOD}.lifecycle_strategy.clear_probe_failures"),
             patch(f"{_CTX}.view_window"),
-            patch(f"{_MOD}.send_to_window", new_callable=AsyncMock) as mock_send,
+            patch.object(
+                _TEST_ADAPTER, "send_text", new_callable=AsyncMock
+            ) as mock_send,
         ):
             await handle_shell_message(bot, 1, 42, "@0", "!", message)
 
@@ -167,8 +206,9 @@ class TestHandleShellMessage:
             patch(f"{_MOD}.lifecycle_strategy.clear_probe_failures"),
             patch(f"{_MOD}.get_completer", return_value=None),
             patch(f"{_CTX}.view_window"),
-            patch(
-                f"{_MOD}.send_to_window",
+            patch.object(
+                _TEST_ADAPTER,
+                "send_text",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ) as mock_send,
@@ -176,8 +216,12 @@ class TestHandleShellMessage:
         ):
             await handle_shell_message(bot, 1, 42, "@0", "find . -name foo", message)
 
-            mock_send.assert_called_once_with(
-                1, "@0", 42, "find . -name foo", ANY, raw=True
+            mock_send.assert_awaited_once_with(
+                "@0",
+                "find . -name foo",
+                submit=True,
+                terminal_input=True,
+                action_id=ANY,
             )
 
     async def test_no_bang_with_llm_calls_completer(self) -> None:
@@ -275,8 +319,9 @@ class TestHandleShellMessage:
             patch(f"{_CTX}.view_window"),
             patch(f"{_MOD}.thread_router") as mock_tr,
             patch(f"{_MOD}.safe_send", new_callable=AsyncMock) as mock_send,
-            patch(
-                f"{_MOD}.send_to_window",
+            patch.object(
+                _TEST_ADAPTER,
+                "send_text",
                 new_callable=AsyncMock,
                 return_value=(False, "Window not found"),
             ),
@@ -368,8 +413,9 @@ class TestHandleShellCallback:
         with (
             patch(f"{_CTX}.view_window"),
             patch(f"{_MOD}.tmux_manager") as mock_tm,
-            patch(
-                f"{_MOD}.send_to_window",
+            patch.object(
+                _TEST_ADAPTER,
+                "send_text",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ) as mock_send,
@@ -382,7 +428,9 @@ class TestHandleShellCallback:
             await handle_shell_callback(query, 1, f"{prefix}@0", bot, 42)
 
         query.answer.assert_called_once()
-        mock_send.assert_called_once_with(1, "@0", 42, command, ANY, raw=True)
+        mock_send.assert_awaited_once_with(
+            "@0", command, submit=True, terminal_input=True, action_id=ANY
+        )
         mock_mark.assert_called_once_with("@0", command, 1, 42, 0)
         assert _shell_pending.get((-100, 42)) is None
 
@@ -547,28 +595,32 @@ class TestCancelStuckInput:
     async def test_ctrl_c_only_when_shell_input_is_stuck(
         self, pane_cmd: str, pane_text: str, expect_ctrl_c: bool
     ) -> None:
-        with patch(f"{_MOD}.tmux_manager") as mock_tm:
+        with (
+            patch(f"{_MOD}.tmux_manager") as mock_tm,
+            patch.object(_TEST_ADAPTER, "send_keys", new_callable=AsyncMock) as send,
+        ):
             mock_tm.find_window_by_id = AsyncMock(return_value=self._window(pane_cmd))
             mock_tm.capture_pane = AsyncMock(return_value=pane_text)
-            mock_tm.send_keys = AsyncMock()
 
-            await _cancel_stuck_input("@0")
+            await _cancel_stuck_input("@0", _TEST_ADAPTER, "test-action")
 
         if expect_ctrl_c:
-            mock_tm.send_keys.assert_called_once_with(
-                "@0", "C-c", enter=False, literal=False
+            send.assert_awaited_once_with(
+                "@0", ["C-c"], action_id="test-action:cancel-stuck-input"
             )
         else:
-            mock_tm.send_keys.assert_not_called()
+            send.assert_not_awaited()
 
     async def test_missing_window_skips(self) -> None:
-        with patch(f"{_MOD}.tmux_manager") as mock_tm:
+        with (
+            patch(f"{_MOD}.tmux_manager") as mock_tm,
+            patch.object(_TEST_ADAPTER, "send_keys", new_callable=AsyncMock) as send,
+        ):
             mock_tm.find_window_by_id = AsyncMock(return_value=None)
-            mock_tm.send_keys = AsyncMock()
 
-            await _cancel_stuck_input("@0")
+            await _cancel_stuck_input("@0", _TEST_ADAPTER, "test-action")
 
-            mock_tm.send_keys.assert_not_called()
+            send.assert_not_awaited()
 
 
 class TestShowCommandApprovalPaths:
@@ -609,8 +661,9 @@ class TestLazyMarkerRecovery:
             patch(f"{_MOD}.lifecycle_strategy.clear_probe_failures"),
             patch(f"{_CTX}.view_window"),
             patch(f"{_MOD}.tmux_manager") as mock_tm,
-            patch(
-                f"{_MOD}.send_to_window",
+            patch.object(
+                _TEST_ADAPTER,
+                "send_text",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ),
@@ -624,7 +677,7 @@ class TestLazyMarkerRecovery:
             mock_tm.capture_pane = AsyncMock(return_value=None)
             await handle_shell_message(bot, 1, 42, "@0", "!ls", message)
 
-        mock_ensure.assert_awaited_once_with("@0", "lazy")
+        mock_ensure.assert_awaited_once_with("@0", "lazy", adapter=_TEST_ADAPTER)
 
 
 class TestHasPromptMarker:
@@ -835,8 +888,9 @@ class TestBangHint:
             patch(f"{_CTX}.view_window"),
             patch(f"{_MOD}.tmux_manager") as mock_tm,
             patch(f"{_MOD}.thread_router") as mock_tr,
-            patch(
-                f"{_MOD}.send_to_window",
+            patch.object(
+                _TEST_ADAPTER,
+                "send_text",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ),
@@ -867,8 +921,9 @@ class TestBangHint:
             patch(f"{_MOD}.get_completer", return_value=None),
             patch(f"{_CTX}.view_window"),
             patch(f"{_MOD}.thread_router") as mock_tr,
-            patch(
-                f"{_MOD}.send_to_window",
+            patch.object(
+                _TEST_ADAPTER,
+                "send_text",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ),
@@ -968,8 +1023,9 @@ class TestTypingAction:
             patch(f"{_MOD}.lifecycle_strategy.clear_probe_failures"),
             patch(f"{_CTX}.view_window"),
             patch(f"{_MOD}.tmux_manager") as mock_tm,
-            patch(
-                f"{_MOD}.send_to_window",
+            patch.object(
+                _TEST_ADAPTER,
+                "send_text",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ),
@@ -1109,8 +1165,9 @@ class TestTypingAction:
             patch(f"{_MOD}.lifecycle_strategy.clear_probe_failures"),
             patch(f"{_CTX}.view_window"),
             patch(f"{_MOD}.tmux_manager") as mock_tm,
-            patch(
-                f"{_MOD}.send_to_window",
+            patch.object(
+                _TEST_ADAPTER,
+                "send_text",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ),
@@ -1138,8 +1195,9 @@ class TestRunningReaction:
             patch(f"{_MOD}.lifecycle_strategy.clear_probe_failures"),
             patch(f"{_CTX}.view_window"),
             patch(f"{_MOD}.tmux_manager") as mock_tm,
-            patch(
-                f"{_MOD}.send_to_window",
+            patch.object(
+                _TEST_ADAPTER,
+                "send_text",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ),
@@ -1170,8 +1228,9 @@ class TestRunningReaction:
             patch(f"{_MOD}.lifecycle_strategy.clear_probe_failures"),
             patch(f"{_CTX}.view_window"),
             patch(f"{_MOD}.tmux_manager") as mock_tm,
-            patch(
-                f"{_MOD}.send_to_window",
+            patch.object(
+                _TEST_ADAPTER,
+                "send_text",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ),
@@ -1187,6 +1246,38 @@ class TestRunningReaction:
         mock_react.assert_not_awaited()
         mock_mark.assert_called_once_with("@0", "ls", 1, 42, 0)
 
+    async def test_no_message_commands_get_fresh_action_ids_per_event(self) -> None:
+        bot = AsyncMock(spec=Bot)
+        with (
+            patch(f"{_MOD}.uuid4", side_effect=[UUID(int=n) for n in range(3)]),
+            patch(f"{_MOD}.enqueue_status_update", new_callable=AsyncMock),
+            patch(f"{_MOD}.lifecycle_strategy.clear_probe_failures"),
+            patch(f"{_MOD}._ensure_prompt_marker", new_callable=AsyncMock),
+            patch(f"{_MOD}._send_typing", new_callable=AsyncMock),
+            patch(f"{_MOD}._cancel_stuck_input", new_callable=AsyncMock),
+            patch.object(
+                _TEST_ADAPTER,
+                "send_text",
+                new_callable=AsyncMock,
+                return_value=(True, "Sent"),
+            ) as send_text,
+            patch("ccgram.handlers.shell.shell_capture.mark_telegram_command"),
+        ):
+            for thread_id in (42, 43, 42):
+                await handle_shell_message(
+                    bot,
+                    1,
+                    thread_id,
+                    "@0",
+                    "!ls",
+                    message=None,
+                    chat_id=-100,
+                )
+
+        action_ids = [call.kwargs["action_id"] for call in send_text.await_args_list]
+        assert len(action_ids) == 3
+        assert len(set(action_ids)) == 3
+
     async def test_run_callback_passes_stored_message_id(self) -> None:
         query = AsyncMock(spec=CallbackQuery)
         query.answer = AsyncMock()
@@ -1197,8 +1288,9 @@ class TestRunningReaction:
             patch(f"{_MOD}.thread_router") as mock_tr,
             patch(f"{_MOD}.tmux_manager") as mock_tm,
             patch(f"{_MOD}.safe_edit", new_callable=AsyncMock),
-            patch(
-                f"{_MOD}.send_to_window",
+            patch.object(
+                _TEST_ADAPTER,
+                "send_text",
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ),

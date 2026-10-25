@@ -13,14 +13,19 @@ without subclassing ``ShellProvider``.
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import os
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import structlog
+
+from ccgram.session_protocol.models import ProtocolError
+
+if TYPE_CHECKING:
+    from ccgram.session_protocol.telegram import TelegramSessionAdapter
 
 _DEFAULT_MARKER = "ccgram"
 
@@ -256,7 +261,7 @@ async def setup_shell_prompt(
     *,
     clear: bool = True,
     capture_fn: Callable[[str], Awaitable[str | None]] | None = None,
-    send_keys_fn: Callable[..., Awaitable[bool]] | None = None,
+    adapter: TelegramSessionAdapter,
 ) -> None:
     """Configure the shell prompt with a detectable marker.
 
@@ -268,9 +273,7 @@ async def setup_shell_prompt(
     Set ``clear=False`` when attaching to an existing session to
     preserve scrollback context.
 
-    ``capture_fn`` and ``send_keys_fn`` are optional and injectable for
-    tests — default to ``tmux_manager.capture_pane`` and
-    ``tmux_manager.send_keys`` so production callers need no changes.
+    ``adapter`` serializes the complete setup sequence with other session input.
     """
     # Lazy: backend capability controls whether prompt setup is supported.
     from ccgram.multiplexer import get_active_multiplexer
@@ -288,6 +291,11 @@ async def setup_shell_prompt(
     if config.own_window_id and window_id == config.own_window_id:
         return
 
+    try:
+        target, snapshot = await adapter.resolve(window_id)
+    except ProtocolError as exc:
+        raise OSError(exc.message) from exc
+
     # Safety: verify the shell is actually idle at a prompt, not running a script.
     if not await _is_interactive_shell(window_id):
         return
@@ -295,23 +303,18 @@ async def setup_shell_prompt(
     if await has_prompt_marker(window_id, capture_fn=capture_fn):
         return
 
-    if send_keys_fn is None:
-        # Lazy: tmux_manager imports providers; lazy fallback for the same
-        # cycle-break reason as has_prompt_marker above.
-        from ccgram.multiplexer import multiplexer as tmux_manager
-
-        send_keys_fn = tmux_manager.send_keys
-
-    await send_keys_fn(window_id, "C-c", enter=False, literal=False)
-    await asyncio.sleep(0.1)
-
     shell = await detect_pane_shell(window_id)
     mode = _get_prompt_mode()
     if mode == "replace":
         cmd = _replace_setup_commands(shell, _get_marker_prefix())
     else:
         cmd = _wrap_setup_commands(shell)
-    await send_keys_fn(window_id, cmd, raw=True)
-    await asyncio.sleep(0.3)
-    if clear:
-        await send_keys_fn(window_id, "clear", raw=True)
+    success, message = await adapter.setup_prompt(
+        window_id,
+        cmd,
+        clear=clear,
+        pane_id=target.pane_id or None,
+        expected_binding_version=snapshot.binding_version,
+    )
+    if not success:
+        raise OSError(message)

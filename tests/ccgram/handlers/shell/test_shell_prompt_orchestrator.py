@@ -55,6 +55,11 @@ def mock_has_marker() -> Iterator[AsyncMock]:
         yield m
 
 
+@pytest.fixture
+def mock_adapter() -> AsyncMock:
+    return AsyncMock()
+
+
 def _callback_update(data: str) -> tuple[AsyncMock, AsyncMock]:
     query = AsyncMock()
     query.data = data
@@ -87,6 +92,7 @@ class TestEnsureSetup:
         self,
         mock_setup: AsyncMock,
         mock_has_marker: AsyncMock,
+        mock_adapter: AsyncMock,
         trigger: Trigger,
         marker_present: bool,
         skip_flag: bool,
@@ -96,10 +102,12 @@ class TestEnsureSetup:
         if skip_flag:
             record_skip(WINDOW)
 
-        await ensure_setup(WINDOW, trigger)
+        await ensure_setup(WINDOW, trigger, adapter=mock_adapter)
 
         mock_setup.assert_awaited_once()
-        assert mock_setup.await_args_list[-1].kwargs["clear"] is expected_clear
+        assert mock_setup.await_args is not None
+        assert mock_setup.await_args.kwargs["adapter"] is mock_adapter
+        assert mock_setup.await_args.kwargs["clear"] is expected_clear
 
     @pytest.mark.parametrize(
         ("trigger", "marker_present", "skip_flag"),
@@ -116,6 +124,7 @@ class TestEnsureSetup:
         self,
         mock_setup: AsyncMock,
         mock_has_marker: AsyncMock,
+        mock_adapter: AsyncMock,
         trigger: Trigger,
         marker_present: bool,
         skip_flag: bool,
@@ -124,12 +133,12 @@ class TestEnsureSetup:
         if skip_flag:
             record_skip(WINDOW)
 
-        await ensure_setup(WINDOW, trigger)
+        await ensure_setup(WINDOW, trigger, adapter=mock_adapter)
 
         mock_setup.assert_not_awaited()
 
     async def test_external_bind_sends_offer_keyboard_when_client_present(
-        self, mock_setup: AsyncMock, mock_has_marker: AsyncMock
+        self, mock_setup: AsyncMock, mock_has_marker: AsyncMock, mock_adapter: AsyncMock
     ) -> None:
         mock_has_marker.return_value = False
 
@@ -139,6 +148,7 @@ class TestEnsureSetup:
             await ensure_setup(
                 WINDOW,
                 "external_bind",
+                adapter=mock_adapter,
                 client=AsyncMock(),
                 chat_id=-100,
                 thread_id=5,
@@ -149,7 +159,7 @@ class TestEnsureSetup:
         mock_setup.assert_not_awaited()
 
     async def test_external_bind_does_not_reoffer(
-        self, mock_setup: AsyncMock, mock_has_marker: AsyncMock
+        self, mock_setup: AsyncMock, mock_has_marker: AsyncMock, mock_adapter: AsyncMock
     ) -> None:
         mock_has_marker.return_value = False
         _state[WINDOW] = _OrchestratorState(was_offered=True)
@@ -158,6 +168,7 @@ class TestEnsureSetup:
             await ensure_setup(
                 WINDOW,
                 "external_bind",
+                adapter=mock_adapter,
                 client=AsyncMock(),
                 chat_id=-100,
                 thread_id=5,
@@ -169,11 +180,15 @@ class TestEnsureSetup:
 
 class TestOfferKeyboard:
     async def test_sends_message_into_the_topic(
-        self, mock_setup: AsyncMock, mock_has_marker: AsyncMock
+        self, mock_setup: AsyncMock, mock_has_marker: AsyncMock, mock_adapter: AsyncMock
     ) -> None:
         with patch(f"{_MOD}.safe_send", new_callable=AsyncMock) as mock_send:
             await _show_offer_keyboard(
-                "@3", client=AsyncMock(), chat_id=-100, thread_id=42
+                "@3",
+                adapter=mock_adapter,
+                client=AsyncMock(),
+                chat_id=-100,
+                thread_id=42,
             )
 
         assert mock_send.call_args[1]["message_thread_id"] == 42
@@ -181,27 +196,30 @@ class TestOfferKeyboard:
         mock_setup.assert_not_awaited()
 
     async def test_without_a_client_falls_back_to_running_setup(
-        self, mock_setup: AsyncMock, mock_has_marker: AsyncMock
+        self, mock_setup: AsyncMock, mock_has_marker: AsyncMock, mock_adapter: AsyncMock
     ) -> None:
-        await _show_offer_keyboard("@3")
+        await _show_offer_keyboard("@3", adapter=mock_adapter)
 
-        mock_setup.assert_awaited_once_with("@3", clear=False)
+        mock_setup.assert_awaited_once_with("@3", adapter=mock_adapter, clear=False)
         assert _state["@3"].was_offered is True
 
 
 class TestCallbackButtons:
     async def test_setup_button_runs_setup(
-        self, mock_setup: AsyncMock, mock_has_marker: AsyncMock
+        self, mock_setup: AsyncMock, mock_has_marker: AsyncMock, mock_adapter: AsyncMock
     ) -> None:
         update, query = _callback_update(f"{CB_SHELL_SETUP}@5")
 
-        with patch(
-            "ccgram.handlers.callback_helpers.user_owns_window", return_value=True
+        with (
+            patch(
+                "ccgram.handlers.callback_helpers.user_owns_window", return_value=True
+            ),
+            patch(f"{_MOD}.adapter_for", return_value=mock_adapter),
         ):
             await _dispatch(update, AsyncMock())
 
         query.answer.assert_awaited_once()
-        mock_setup.assert_awaited_once_with("@5", clear=False)
+        mock_setup.assert_awaited_once_with("@5", adapter=mock_adapter, clear=False)
         assert _state["@5"].was_offered is True
         query.edit_message_text.assert_awaited_once()
 
@@ -220,11 +238,11 @@ class TestCallbackButtons:
 
 class TestStateBookkeeping:
     async def test_accept_offer_runs_setup(
-        self, mock_setup: AsyncMock, mock_has_marker: AsyncMock
+        self, mock_setup: AsyncMock, mock_has_marker: AsyncMock, mock_adapter: AsyncMock
     ) -> None:
-        await accept_offer(WINDOW)
+        await accept_offer(WINDOW, adapter=mock_adapter)
 
-        mock_setup.assert_awaited_once_with(WINDOW, clear=False)
+        mock_setup.assert_awaited_once_with(WINDOW, adapter=mock_adapter, clear=False)
         assert _state[WINDOW].was_offered is True
 
     def test_record_skip_sets_flag(self) -> None:

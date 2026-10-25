@@ -11,18 +11,14 @@ from ccgram.providers.pi import (
     _candidate_transcripts,
     encode_cwd_dirname,
 )
-from ccgram.providers.pi_format import (
-    canonical_tool_name,
-    extract_text,
-    format_tool_result_text,
-    normalize_pending,
-    parse_assistant,
-    parse_bash_execution,
-    parse_session_header,
-    parse_tool_result,
-    parse_user,
-    read_session_header,
+from ccgram.providers.pi_format import read_session_header
+from ccgram.session_protocol.messages import (
+    SourceEntry,
+    build_messages,
+    parse_records,
+    read_entries,
 )
+from ccgram.transcript_reader import render_protocol_records
 
 
 class TestEncodeCwdDirname:
@@ -41,96 +37,6 @@ class TestEncodeCwdDirname:
     )
     def test_encodes(self, cwd: str, expected: str) -> None:
         assert encode_cwd_dirname(cwd) == expected
-
-
-class TestCanonicalToolName:
-    @pytest.mark.parametrize(
-        ("raw", "display"),
-        [
-            ("bash", "Bash"),
-            ("BASH", "Bash"),
-            ("read", "Read"),
-            ("edit", "Edit"),
-            ("webfetch", "WebFetch"),
-            ("web_fetch", "WebFetch"),
-            ("unknown_tool", "unknown_tool"),
-        ],
-    )
-    def test_aliases(self, raw: str, display: str) -> None:
-        assert canonical_tool_name(raw) == display
-
-
-class TestExtractText:
-    def test_string(self) -> None:
-        assert extract_text("hi") == "hi"
-
-    def test_block_array(self) -> None:
-        blocks = [{"type": "text", "text": "a "}, {"type": "text", "text": "b"}]
-        assert extract_text(blocks) == "a b"
-
-    def test_skips_non_text(self) -> None:
-        blocks = [
-            {"type": "thinking", "thinking": "hmm"},
-            {"type": "text", "text": "visible"},
-            {"type": "image", "data": "..."},
-        ]
-        assert extract_text(blocks) == "visible"
-
-    def test_empty(self) -> None:
-        assert extract_text([]) == ""
-        assert extract_text(None) == ""
-        assert extract_text(123) == ""
-
-
-class TestFormatToolResultText:
-    def test_empty_returns_done(self) -> None:
-        assert format_tool_result_text("bash", "") == "Done"
-
-    def test_bash_always_quoted(self) -> None:
-        out = format_tool_result_text("bash", "one line")
-        assert "1 line" in out
-        assert "1 lines" not in out
-        assert "one line" in out
-
-    def test_bash_pluralizes_two_lines(self) -> None:
-        out = format_tool_result_text("bash", "a\nb")
-        assert "2 lines" in out
-
-    def test_short_non_bash_inline(self) -> None:
-        assert format_tool_result_text("read", "x") == "x"
-
-    def test_long_non_bash_quoted(self) -> None:
-        output = "l1\nl2\nl3\nl4\nl5"
-        rendered = format_tool_result_text("read", output)
-        assert "5 lines" in rendered
-        assert "l1" in rendered
-
-
-class TestParseSessionHeader:
-    def test_ok(self) -> None:
-        entry = {
-            "type": "session",
-            "version": 3,
-            "id": "019d9fcf-3663-750a-b941-946136546d38",
-            "cwd": "/Users/alexei/Workspace/ccgram",
-        }
-        assert parse_session_header(entry) == {
-            "id": "019d9fcf-3663-750a-b941-946136546d38",
-            "cwd": "/Users/alexei/Workspace/ccgram",
-        }
-
-    @pytest.mark.parametrize(
-        "entry",
-        [
-            {"type": "message", "id": "x", "cwd": "/"},
-            {"type": "session", "cwd": "/"},
-            {"type": "session", "id": "x"},
-            {"type": "session", "id": "", "cwd": "/"},
-            {"type": "session", "id": "x", "cwd": ""},
-        ],
-    )
-    def test_rejects(self, entry: dict) -> None:
-        assert parse_session_header(entry) is None
 
 
 class TestReadSessionHeader:
@@ -154,234 +60,6 @@ class TestReadSessionHeader:
         path = tmp_path / "bad.jsonl"
         path.write_text("not json\n")
         assert read_session_header(str(path)) is None
-
-
-class TestParseUser:
-    def test_text_blocks(self) -> None:
-        msg = {"role": "user", "content": [{"type": "text", "text": "analyze g"}]}
-        [m] = parse_user(msg)
-        assert m.role == "user"
-        assert m.content_type == "text"
-        assert m.text == "analyze g"
-
-    def test_empty_returns_nothing(self) -> None:
-        assert parse_user({"role": "user", "content": []}) == []
-        assert parse_user({"role": "user", "content": ""}) == []
-
-
-class TestParseAssistant:
-    def test_text_only(self) -> None:
-        msg = {
-            "role": "assistant",
-            "content": [{"type": "text", "text": "hello"}],
-        }
-        msgs, pending = parse_assistant(msg, {})
-        assert len(msgs) == 1
-        assert msgs[0].content_type == "text"
-        assert msgs[0].text == "hello"
-        assert pending == {}
-
-    def test_text_and_tool_calls(self) -> None:
-        msg = {
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "running tools"},
-                {
-                    "type": "toolCall",
-                    "id": "t1",
-                    "name": "bash",
-                    "arguments": {"command": "ls -la"},
-                },
-                {"type": "text", "text": "after"},
-                {
-                    "type": "toolCall",
-                    "id": "t2",
-                    "name": "read",
-                    "arguments": {"path": "foo.py"},
-                },
-            ],
-        }
-        msgs, pending = parse_assistant(msg, {}, timestamp="2024-12-03T14:00:02.000Z")
-        assert [m.content_type for m in msgs] == [
-            "text",
-            "tool_use",
-            "text",
-            "tool_use",
-        ]
-        assert [m.text for m in msgs] == [
-            "running tools",
-            "\U0001f4bb **bash**: `ls -la`",
-            "after",
-            "\U0001f4d6 **read**: `foo.py`",
-        ]
-        assert all(m.timestamp == "2024-12-03T14:00:02.000Z" for m in msgs)
-        assert msgs[1].tool_use_id == "t1"
-        assert msgs[1].tool_name == "Bash"
-        assert msgs[3].tool_use_id == "t2"
-        assert msgs[3].tool_name == "Read"
-        assert pending == {"t1": ("bash", "Bash"), "t2": ("read", "Read")}
-
-    def test_skips_thinking(self) -> None:
-        msg = {
-            "role": "assistant",
-            "content": [
-                {"type": "thinking", "thinking": "private"},
-                {"type": "text", "text": "public"},
-            ],
-        }
-        msgs, _ = parse_assistant(msg, {})
-        assert len(msgs) == 1
-        assert msgs[0].text == "public"
-
-    def test_api_error_surfaces(self) -> None:
-        msg = {
-            "role": "assistant",
-            "content": [],
-            "stopReason": "error",
-            "errorMessage": '400 {"error":"bad model"}',
-        }
-        msgs, _ = parse_assistant(msg, {})
-        assert len(msgs) == 1
-        assert msgs[0].content_type == "text"
-        assert "API error" in msgs[0].text
-        assert "bad model" in msgs[0].text
-
-    def test_empty_content_no_error_no_output(self) -> None:
-        msgs, _ = parse_assistant({"role": "assistant", "content": []}, {})
-        assert msgs == []
-
-    def test_error_appended_alongside_partial_content(self) -> None:
-        msg = {
-            "role": "assistant",
-            "content": [{"type": "text", "text": "partial reply "}],
-            "stopReason": "error",
-            "errorMessage": "rate limited",
-        }
-        msgs, _ = parse_assistant(msg, {})
-        assert [m.content_type for m in msgs] == ["text", "text"]
-        assert msgs[0].text == "partial reply"
-        assert "API error" in msgs[1].text
-        assert "rate limited" in msgs[1].text
-
-    def test_string_content(self) -> None:
-        msg = {"role": "assistant", "content": "plain string reply"}
-        msgs, _ = parse_assistant(msg, {})
-        assert len(msgs) == 1
-        assert msgs[0].text == "plain string reply"
-        assert msgs[0].content_type == "text"
-
-    def test_string_content_with_error(self) -> None:
-        msg = {
-            "role": "assistant",
-            "content": "partial",
-            "stopReason": "error",
-            "errorMessage": "context overflow",
-        }
-        msgs, _ = parse_assistant(msg, {})
-        assert len(msgs) == 2
-        assert msgs[0].text == "partial"
-        assert "API error" in msgs[1].text
-        assert "context overflow" in msgs[1].text
-
-
-class TestParseToolResult:
-    def test_pairs_with_pending(self) -> None:
-        pending = {"t1": ("bash", "Bash")}
-        msg = {
-            "role": "toolResult",
-            "toolCallId": "t1",
-            "toolName": "bash",
-            "content": [{"type": "text", "text": "one\ntwo\nthree\nfour"}],
-            "isError": False,
-        }
-        [out], pending = parse_tool_result(msg, pending)
-        assert out.content_type == "tool_result"
-        assert out.tool_use_id == "t1"
-        assert out.tool_name == "Bash"
-        assert "4 lines" in out.text
-        assert pending == {}
-
-    def test_fallback_without_pending(self) -> None:
-        msg = {
-            "role": "toolResult",
-            "toolCallId": "unknown",
-            "toolName": "read",
-            "content": [{"type": "text", "text": "ok"}],
-        }
-        [out], _ = parse_tool_result(msg, {})
-        assert out.tool_name == "Read"
-        assert out.text == "ok"
-
-    def test_error_flag(self) -> None:
-        msg = {
-            "role": "toolResult",
-            "toolCallId": "t1",
-            "toolName": "bash",
-            "content": [{"type": "text", "text": "boom"}],
-            "isError": True,
-        }
-        [out], _ = parse_tool_result(msg, {})
-        assert out.text == "Error: boom"
-
-    def test_empty_error_is_not_done(self) -> None:
-        msg = {
-            "role": "toolResult",
-            "toolCallId": "t1",
-            "toolName": "bash",
-            "content": [],
-            "isError": True,
-        }
-        [out], _ = parse_tool_result(msg, {})
-        assert out.text == "Error"
-
-
-class TestParseBashExecution:
-    def test_happy_path(self) -> None:
-        [out] = parse_bash_execution(
-            {"role": "bashExecution", "command": "ls", "output": "a\nb"}
-        )
-        assert "$ ls" in out.text
-        assert "a\nb" in out.text
-
-    def test_excluded_from_context(self) -> None:
-        assert (
-            parse_bash_execution(
-                {
-                    "role": "bashExecution",
-                    "command": "echo x",
-                    "output": "x",
-                    "excludeFromContext": True,
-                }
-            )
-            == []
-        )
-
-    def test_non_zero_exit(self) -> None:
-        [out] = parse_bash_execution(
-            {"role": "bashExecution", "command": "false", "output": "", "exitCode": 1},
-            timestamp="2024-12-03T14:00:03.000Z",
-        )
-        assert "exit code 1" in out.text
-        assert out.timestamp == "2024-12-03T14:00:03.000Z"
-
-
-class TestNormalizePending:
-    @pytest.mark.parametrize(
-        ("raw", "expected"),
-        [
-            pytest.param(
-                {"x": ("bash", "Bash")}, {"x": ("bash", "Bash")}, id="tuple_kept"
-            ),
-            pytest.param(
-                {"x": "bash"}, {"x": ("bash", "Bash")}, id="legacy_string_upgraded"
-            ),
-            pytest.param({"x": 123, "y": None}, {}, id="non_string_values_dropped"),
-            pytest.param(None, {}, id="none"),
-            pytest.param([], {}, id="list"),
-        ],
-    )
-    def test_normalize_pending(self, raw: object, expected: dict) -> None:
-        assert normalize_pending(raw) == expected
 
 
 class TestMakeLaunchArgs:
@@ -416,78 +94,118 @@ class TestMakeLaunchArgs:
         assert PiProvider().make_launch_args(**kwargs) == expected
 
 
-class TestParseTranscriptLine:
-    def setup_method(self) -> None:
-        self.provider = PiProvider()
-
-    def test_passes_through_session_header(self) -> None:
-        line = '{"type":"session","id":"abc","cwd":"/x"}'
-        out = self.provider.parse_transcript_line(line)
-        assert out == {"type": "session", "id": "abc", "cwd": "/x"}
-
-    def test_unwraps_message_envelope(self) -> None:
-        line = json.dumps(
-            {
-                "type": "message",
-                "id": "m1",
-                "parentId": "m0",
-                "timestamp": "2024-12-03T14:00:01.000Z",
-                "message": {
-                    "role": "user",
-                    "content": [{"type": "text", "text": "hi"}],
-                },
-            }
+class TestCanonicalTranscriptParsing:
+    def test_reads_pi_message_without_provider_rewriting(self) -> None:
+        raw = (
+            json.dumps(
+                {
+                    "type": "message",
+                    "id": "m1",
+                    "parentId": "m0",
+                    "timestamp": "2024-12-03T14:00:01.000Z",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "hi"}],
+                    },
+                }
+            ).encode()
+            + b"\n"
         )
-        out = self.provider.parse_transcript_line(line)
-        assert out is not None
-        assert out["type"] == "user"
-        assert out["id"] == "m1"
-        assert out["parentId"] == "m0"
-        assert out["timestamp"] == "2024-12-03T14:00:01.000Z"
-        assert out["message"]["content"][0]["text"] == "hi"
+        entries = read_entries(raw, "pi")
+        messages = build_messages(entries, "pi-test", "pi")
+        assert len(messages) == 1
+        assert messages[0].role == "user"
+        assert messages[0].time == "2024-12-03T14:00:01.000Z"
+        assert messages[0].parts[0].text == "hi"
 
-    def test_rejects_empty(self) -> None:
-        assert self.provider.parse_transcript_line("") is None
-        assert self.provider.parse_transcript_line("not json") is None
+    def test_ignores_non_message_and_malformed_records(self) -> None:
+        entries = read_entries(b'{"type":"session","id":"abc"}\nnot json\n', "pi")
+        records, _ = parse_records(entries, "pi")
+        assert records == ()
+        assert read_entries(b"not json\n", "pi") == []
 
-    def test_rejects_message_without_role(self) -> None:
-        line = '{"type":"message","message":{"content":[]}}'
-        assert self.provider.parse_transcript_line(line) is None
-
-
-class TestHistoryEntry:
-    def test_reads_raw_user_message(self) -> None:
-        entry = {
-            "type": "message",
-            "timestamp": "2024-12-03T14:00:01.000Z",
-            "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+    @pytest.mark.parametrize(
+        ("payload", "expected_text", "expected_level"),
+        [
+            pytest.param(
+                {"command": "ls", "output": "a\nb"},
+                "$ ls\na\nb",
+                "info",
+                id="success",
+            ),
+            pytest.param(
+                {"command": "false", "exitCode": 2},
+                "$ false\nexit code 2",
+                "error",
+                id="non-zero-exit",
+            ),
+            pytest.param(
+                {"command": "sleep 10", "output": "stopped", "cancelled": True},
+                "$ sleep 10\nstopped\n(cancelled)",
+                "info",
+                id="cancelled",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("envelope_type", ["bashExecution", "message"])
+    def test_bash_execution_is_visible_in_history_and_telegram_rendering(
+        self,
+        payload: dict,
+        expected_text: str,
+        expected_level: str,
+        envelope_type: str,
+    ) -> None:
+        message = {
+            "role": "bashExecution",
+            "timestamp": "2024-12-03T14:00:03.000Z",
+            **payload,
         }
-        assert PiProvider().is_user_transcript_entry(entry) is True
-        parsed = PiProvider().parse_history_entry(entry)
-        assert parsed is not None
-        assert parsed.text == "hi"
-        assert parsed.timestamp == "2024-12-03T14:00:01.000Z"
+        entry = SourceEntry(
+            0,
+            {"type": envelope_type, "id": "bash-1", "message": message},
+        )
 
-    def test_parses_assistant_message(self) -> None:
-        entry = {
-            "type": "message",
-            "message": {
-                "role": "assistant",
-                "content": [{"type": "text", "text": "hi"}],
+        records, state = parse_records([entry], "pi")
+        messages = build_messages([entry], "pi-test", "pi")
+        rendered = render_protocol_records("pi-test", "pi", records, state)
+
+        assert len(messages) == 1
+        assert messages[0].role == "agent"
+        assert messages[0].time == "2024-12-03T14:00:03.000Z"
+        assert messages[0].parts[0].type == "notice"
+        assert messages[0].parts[0].text == expected_text
+        assert messages[0].parts[0].level == expected_level
+        assert len(rendered) == 1
+        assert rendered[0].text == expected_text
+        assert rendered[0].role == "assistant"
+
+    def test_bash_execution_excluded_from_history_and_telegram(self) -> None:
+        entry = SourceEntry(
+            0,
+            {
+                "type": "bashExecution",
+                "id": "excluded-bash",
+                "message": {
+                    "role": "bashExecution",
+                    "command": "echo secret",
+                    "output": "secret",
+                    "excludeFromContext": True,
+                },
             },
-        }
-        assert PiProvider().is_user_transcript_entry(entry) is False
-        parsed = PiProvider().parse_history_entry(entry)
-        assert parsed is not None
-        assert parsed.role == "assistant"
-        assert parsed.text == "hi"
+        )
 
-    def test_preserves_order_and_timestamp(self) -> None:
-        provider = PiProvider()
+        records, state = parse_records([entry], "pi")
+
+        assert records == ()
+        assert build_messages([entry], "pi-test", "pi") == ()
+        assert render_protocol_records("pi-test", "pi", records, state) == []
+
+    def test_history_message_preserves_order_and_timestamp(self) -> None:
         entry = {
-            "type": "assistant",
+            "type": "message",
             "timestamp": "2024-12-03T14:00:02.000Z",
             "message": {
+                "role": "assistant",
                 "content": [
                     {"type": "text", "text": "before"},
                     {
@@ -497,18 +215,44 @@ class TestHistoryEntry:
                         "arguments": {"path": "foo.py"},
                     },
                     {"type": "text", "text": "after"},
-                ]
+                ],
             },
         }
-        msgs, pending = provider.parse_transcript_entries([entry], {})
-        assert [m.content_type for m in msgs] == ["text", "tool_use", "text"]
-        assert [m.text for m in msgs] == [
-            "before",
-            "\U0001f4d6 **read**: `foo.py`",
-            "after",
-        ]
-        assert all(m.timestamp == "2024-12-03T14:00:02.000Z" for m in msgs)
-        assert pending == {"t1": ("read", "Read")}
+        messages = build_messages([SourceEntry(0, entry)], "pi-test", "pi")
+        assert len(messages) == 1
+        assert [part.type for part in messages[0].parts] == ["text", "tool", "text"]
+        assert [part.text for part in messages[0].parts] == ["before", None, "after"]
+        assert messages[0].time == "2024-12-03T14:00:02.000Z"
+
+    @pytest.mark.parametrize(
+        ("content", "expected_texts"),
+        [
+            pytest.param([], ["Provider error"], id="empty-content"),
+            pytest.param(
+                [{"type": "text", "text": "partial output"}],
+                ["partial output", "Provider error"],
+                id="partial-content",
+            ),
+        ],
+    )
+    def test_assistant_error_is_preserved_with_empty_or_partial_content(
+        self, content: list[dict], expected_texts: list[str]
+    ) -> None:
+        entry = {
+            "type": "message",
+            "id": "error-message",
+            "message": {
+                "role": "assistant",
+                "content": content,
+                "stopReason": "error",
+                "errorMessage": "Provider error",
+            },
+        }
+
+        messages = build_messages([SourceEntry(0, entry)], "pi-test", "pi")
+
+        assert [part.text for part in messages[0].parts] == expected_texts
+        assert messages[0].parts[-1].level == "error"
 
 
 class TestDiscoverTranscript:
@@ -577,6 +321,7 @@ class TestCapabilities:
         assert caps.name == "pi"
         assert caps.launch_command == "pi"
         assert caps.supports_hook is True
+        assert caps.hook_install_managed_by_ccgram is True
         assert caps.supports_resume is True
         assert caps.supports_continue is True
         assert caps.supports_incremental_read is True

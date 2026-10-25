@@ -32,6 +32,7 @@ from ..multiplexer.base import canonical_window_id
 from ..config import config
 from ..session import AuditIssue, AuditResult, session_manager
 from ..session_map import session_map_sync
+from ..session_protocol.telegram import TelegramSessionAdapter, adapter_for
 from ..telegram_client import PTBTelegramClient, TelegramClient
 from ..thread_router import thread_router
 from ..multiplexer import multiplexer as tmux_manager
@@ -303,10 +304,12 @@ async def _cleanup_retired_topics(client: TelegramClient) -> dict[str, int]:
 
 
 async def _cleanup_stale_topics(
-    client: TelegramClient, issues: list[AuditIssue]
+    client: TelegramClient,
+    issues: list[AuditIssue],
+    adapter: TelegramSessionAdapter,
 ) -> tuple[int, int, dict[str, int]]:
     """Delete confirmed ghost topics and locally recorded retired topics."""
-    recovery = await recover_topic_provisioning(client)
+    recovery = await recover_topic_provisioning(client, adapter=adapter)
     recovery_outcomes = {
         outcome: count
         for outcome, count in recovery.items()
@@ -452,7 +455,7 @@ async def _adopt_orphaned_windows(
             logger.exception("Failed to adopt orphaned window %s", window_id)
 
 
-async def sync_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /sync — clean stale topics, then audit state and show report."""
     user = update.effective_user
     if not user or not update.message:
@@ -468,6 +471,7 @@ async def sync_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> N
         thread_id=update.message.message_thread_id,
     )
     status_msg = await safe_reply(update.message, "🔍 State audit…")
+    adapter = adapter_for(context.bot_data)
     client = PTBTelegramClient(update.get_bot())
     audit = await _run_audit()
     if audit is None:
@@ -491,7 +495,7 @@ async def sync_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> N
     if status_msg is not None:
         await safe_edit(status_msg, "🧹 Cleaning up stale topics…", reply_markup=None)
     closed_count, manual_close_count, retired_outcomes = await _cleanup_stale_topics(
-        client, cleanup_issues
+        client, cleanup_issues, adapter
     )
 
     post_audit = await _run_audit()
@@ -528,7 +532,9 @@ async def sync_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
-async def handle_sync_fix(query: CallbackQuery) -> None:
+async def handle_sync_fix(
+    query: CallbackQuery, adapter: TelegramSessionAdapter
+) -> None:
     """Run all fix operations, re-audit, and edit message in place."""
     await safe_edit(query, "🔧 Fixing…", reply_markup=None)
 
@@ -573,7 +579,7 @@ async def handle_sync_fix(query: CallbackQuery) -> None:
     # Enforcement: adopt orphans first so stale same-name topics can be rebound.
     await _adopt_orphaned_windows(client, pre_audit.issues)
     closed_count, manual_close_count, retired_outcomes = await _cleanup_stale_topics(
-        client, pre_audit.issues
+        client, pre_audit.issues, adapter
     )
 
     # Re-audit and compute actual fixed count (handles partial failures).
@@ -625,7 +631,7 @@ async def _dispatch(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None
             await query.answer("You are not authorized", show_alert=True)
             return
         await query.answer("Running fix...")
-        await handle_sync_fix(query)
+        await handle_sync_fix(query, adapter_for(_context.bot_data))
     elif query.data == CB_SYNC_DISMISS:
         await query.answer("Dismissed")
         await handle_sync_dismiss(query)

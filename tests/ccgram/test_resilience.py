@@ -79,8 +79,12 @@ class TestScreenBufferResilience:
 
 
 class TestJsonlMalformedEntries:
-    def test_non_dict_message_field_skipped_in_parse(self):
-        from ccgram.providers._jsonl import parse_jsonl_entries
+    def test_non_dict_message_fields_are_skipped_by_both_protocol_reads(self):
+        from ccgram.session_protocol.messages import (
+            SourceEntry,
+            build_messages,
+            parse_records,
+        )
 
         entries = [
             {"type": "assistant", "message": "not a dict"},
@@ -88,27 +92,15 @@ class TestJsonlMalformedEntries:
             {"type": "assistant", "message": None},
             {"type": "assistant", "message": 42},
         ]
-        messages, _ = parse_jsonl_entries(entries, {})
-        assert len(messages) == 1
-        assert messages[0].text == "valid text"
+        source = [
+            SourceEntry(index * 100, entry) for index, entry in enumerate(entries)
+        ]
 
-    def test_non_dict_message_field_skipped_in_history(self):
-        from ccgram.providers._jsonl import parse_jsonl_history_entry
+        live, _ = parse_records(source, "claude")
+        history = build_messages(source, "conv", "claude")
 
-        assert (
-            parse_jsonl_history_entry({"type": "assistant", "message": "string"})
-            is None
-        )
-        assert parse_jsonl_history_entry({"type": "assistant", "message": None}) is None
-        assert parse_jsonl_history_entry({"type": "assistant", "message": 42}) is None
-
-    def test_valid_entry_still_parsed(self):
-        from ccgram.providers._jsonl import parse_jsonl_history_entry
-
-        entry = {"type": "assistant", "message": {"content": "hello world"}}
-        result = parse_jsonl_history_entry(entry)
-        assert result is not None
-        assert result.text == "hello world"
+        assert [record.parts[0]["text"] for _, record in live] == ["valid text"]
+        assert [message.parts[0].text for message in history] == ["valid text"]
 
 
 class TestSessionMapCorruptionGuard:
@@ -530,6 +522,7 @@ class TestShellDetectionSafety:
     async def test_setup_shell_prompt_skips_own_window(self):
         from ccgram.providers.shell import setup_shell_prompt
 
+        adapter = AsyncMock()
         with (
             patch("ccgram.config.config") as mock_config,
             patch(
@@ -542,13 +535,19 @@ class TestShellDetectionSafety:
             ),
         ):
             mock_config.own_window_id = "@99"
-            await setup_shell_prompt("@99", clear=False)
+            await setup_shell_prompt("@99", clear=False, adapter=adapter)
 
         mock_has_marker.assert_not_awaited()
+        adapter.setup_prompt.assert_not_awaited()
 
     async def test_setup_shell_prompt_skips_non_interactive(self):
         from ccgram.providers.shell import setup_shell_prompt
 
+        adapter = AsyncMock()
+        adapter.resolve.return_value = (
+            MagicMock(pane_id="%5"),
+            MagicMock(binding_version=1),
+        )
         with (
             patch("ccgram.config.config") as mock_config,
             patch(
@@ -562,6 +561,7 @@ class TestShellDetectionSafety:
             ) as mock_has_marker,
         ):
             mock_config.own_window_id = None
-            await setup_shell_prompt("@5", clear=False)
+            await setup_shell_prompt("@5", clear=False, adapter=adapter)
 
         mock_has_marker.assert_not_awaited()
+        adapter.setup_prompt.assert_not_awaited()

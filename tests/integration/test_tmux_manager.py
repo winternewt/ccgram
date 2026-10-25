@@ -7,6 +7,10 @@ import shutil
 import pytest
 
 from ccgram.multiplexer.tmux import TmuxManager
+from ccgram.session_protocol.backend import MultiplexerSessionBackend
+from ccgram.session_protocol.service import LocalSessionService
+from ccgram.session_protocol.store import ProtocolStore
+from ccgram.session_protocol.telegram import TelegramSessionAdapter
 
 pytestmark = [
     pytest.mark.integration,
@@ -28,6 +32,14 @@ async def tmux(tmp_path):
     session = mgr.get_session()
     if session:
         session.kill()
+
+
+@pytest.fixture()
+def session_adapter(tmux, tmp_path):
+    store = ProtocolStore(tmp_path / "session-protocol.sqlite3")
+    service = LocalSessionService(MultiplexerSessionBackend(tmux, str(tmp_path)), store)
+    yield TelegramSessionAdapter(service)
+    store.close()
 
 
 async def test_create_and_list_windows(tmux, tmp_path) -> None:
@@ -196,7 +208,9 @@ async def test_capture_pane_with_ansi(tmux, tmp_path) -> None:
 # ── YOLO bypass prompt detection ────────────────────────────────────────
 
 
-async def test_accept_yolo_confirmation_detects_prompt(tmux, tmp_path) -> None:
+async def test_accept_yolo_confirmation_detects_prompt(
+    tmux, tmp_path, session_adapter
+) -> None:
     from unittest.mock import patch
 
     ok, _msg, _name, window_id = await tmux.create_window(
@@ -213,7 +227,9 @@ async def test_accept_yolo_confirmation_detects_prompt(tmux, tmp_path) -> None:
     with patch("ccgram.handlers.topics.window_launch_service.tmux_manager", tmux):
         from ccgram.handlers.topics.directory_callbacks import _accept_yolo_confirmation
 
-        result = await _accept_yolo_confirmation(window_id, timeout=3.0)
+        result = await _accept_yolo_confirmation(
+            window_id, session_adapter, timeout=3.0
+        )
 
     assert result is True
 
@@ -245,7 +261,9 @@ async def test_create_window_with_special_char_launch_command(tmux, tmp_path) ->
     )
 
 
-async def test_accept_yolo_confirmation_timeout_on_no_prompt(tmux, tmp_path) -> None:
+async def test_accept_yolo_confirmation_timeout_on_no_prompt(
+    tmux, tmp_path, session_adapter
+) -> None:
     from unittest.mock import patch
 
     ok, _msg, _name, window_id = await tmux.create_window(
@@ -259,6 +277,8 @@ async def test_accept_yolo_confirmation_timeout_on_no_prompt(tmux, tmp_path) -> 
     with patch("ccgram.handlers.topics.window_launch_service.tmux_manager", tmux):
         from ccgram.handlers.topics.directory_callbacks import _accept_yolo_confirmation
 
-        result = await _accept_yolo_confirmation(window_id, timeout=1.0)
+        result = await _accept_yolo_confirmation(
+            window_id, session_adapter, timeout=1.0
+        )
 
     assert result is False

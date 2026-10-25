@@ -8,15 +8,16 @@ Inbound user message (Telegram → multiplexer):
 
 1. PTB dispatcher routes through handlers wired in `handlers/registry.py`.
 2. `handlers/text/text_handler.py` validates context and resolves topic binding.
-3. `session.py` maps `(user_id, thread_id)` → `window_id`.
-4. The multiplexer proxy sends keys to the mapped target. For Herdr, `multiplexer/herdr.py` reads `agent.list` immediately before dispatch, requires one matching opaque `herdr-session-v1-…` target, and uses that record's locator only for that action.
+3. `thread_router.py` resolves the user's chat/topic binding to a native target ID.
+4. `session_protocol/telegram.py:TelegramSessionAdapter` sends the action through the shared `ActionExecutor`, which owns durable action reservation, binding/prompt checks, and the per-target input lock.
+5. `MultiplexerSessionBackend` uses the multiplexer seam. For Herdr, `multiplexer/herdr.py` reads `agent.list` immediately before dispatch, requires one matching opaque `herdr-session-v1-…` target, and uses that record's locator only for that action.
 
 Shell provider (NL → command → shell):
 
 1. `handlers/text/text_handler.py` detects shell-provider window, routes to `handlers/shell/shell_commands.py`.
 2. `shell_commands.py` calls `llm/` to generate a suggested command.
 3. Approval keyboard rendered; user confirms or cancels.
-4. On approval, command sent via `tmux_manager.py`.
+4. On approval, the Telegram adapter submits the command through the shared executor. Paste and submission hold one target lock. Prompt setup also holds that lock for its full sequence.
 5. `handlers/shell/shell_capture.py` polls pane output and relays via in-place edits.
 
 Voice message (voice → transcription → agent):
@@ -25,15 +26,22 @@ Voice message (voice → transcription → agent):
 2. Confirm/discard keyboard shown.
 3. On confirm, `handlers/voice/voice_callbacks.py` checks provider:
    - Shell: routes transcribed text through `handlers/shell/shell_commands.py` (LLM → approval).
-   - Other: sends directly to the tmux window.
+   - Other: calls `send_telegram_to_window` with the Telegram adapter, using the shared executor and backend.
+
+Mobile client (HTTP/WebSocket → shared core):
+
+1. `api/server.py` validates Host/Origin, device credentials, and request schemas.
+2. Queries and actions use the same session service and executor as Telegram.
+3. WebSocket clients receive snapshots, canonical messages, requests, and bounded replay through the shared event hub.
+4. `bootstrap.py` starts the core even when the optional HTTP listener is disabled. See [protocol implementation](../protocol/implementation.md) for module boundaries and [operations](../protocol/operations.md) for the backend-wide process lock.
 
 Outbound agent output (provider transcript/event → Telegram):
 
 1. `session_monitor.py` gets a fresh live-window listing and converges any uniquely attested identity aliases before reading hooks or loading the session-map delta.
-2. It dispatches hook events only after convergence, then parses the reconciled session map and transcript updates while creating dependency-light receipts from `delivery_contract.py`.
-3. Provider parser (`providers/*.py` + `transcript_parser.py` / `terminal_parser.py`) emits normalized updates.
+2. It dispatches hook events only after convergence, then reads the reconciled session map and transcript updates through `transcript_reader.py`, retaining dependency-light receipts from `delivery_contract.py`.
+3. `session_protocol/messages.py` normalizes provider records once. The shared event hub delivers canonical batches to the Telegram consumer, and `bootstrap.py` renders them through `render_transcript_batch`. Providers and `terminal_parser.py` detect terminal status.
 4. `handlers/messaging_pipeline/message_queue.py` enforces ordering, merge rules, rate limits and settles the shared receipt contract. Worker takes a `TelegramClient`.
-5. `handlers/messaging_pipeline/message_sender.py` delivers via the Protocol.
+5. `handlers/messaging_pipeline/message_sender.py` delivers via `TelegramClient`. Only settled receipts advance Telegram's durable transcript checkpoint.
 
 Screenshots (`/screenshot`, 📷 status-bar button):
 
@@ -51,6 +59,8 @@ Live view (terminal → auto-refresh screenshots):
 5. Auto-stops after `config.live_view_timeout` or when user taps Stop.
 
 Terminal closure and topic cleanup:
+
+On push-capable backends, the neutral `EventStreamMonitor` reports death through an awaited callback. Bootstrap wires the public `handlers/polling/window_death.py:handle_window_death` entrypoint. That adapter snapshots current recipients (deletion can unbind them during await) and routes to the same policy used by polling. See [runtime boundaries](../architecture.md#runtime-composition-and-lifecycle-boundaries).
 
 1. `handlers/polling/window_tick/apply.py` rechecks target presence and pending creation before retiring a dead binding.
 2. `handlers/topics/topic_deletion.py` persists cleanup ownership and attempts immediate topic/history deletion. Failed deletion remains queued; `/sync` and periodic maintenance retry it. Unknown presence never proves closure.
@@ -80,6 +90,7 @@ Topic command panel (`/commands`):
 - A fresh live listing is the sole owner of identity-alias convergence. It folds only uniquely attested aliases and must run before hook-event consumption, because hook routing resolves only exact topic bindings; legacy aliases are migration evidence, never a second routing path.
 - Monitor-cycle ordering is identity reconciliation → session-map re-read → hook-event dispatch → session-map/transcript work. Alias migration must precede consumption of an event whose canonical Herdr target replaced a bound target; the event offset advances only after that dispatch path runs.
 - Transcript offsets are delivered watermarks, not queue-idleness snapshots. `delivery_contract.py` owns the dependency-light receipt/outcome model; the message queue settles it and the monitor persists only receipts settled as delivered or intentionally dropped, leaving failed receipt ranges replayable after restart. Core monitor code must not import handler implementations.
+- The planned iOS client uses `ccgram/1`, not Telegram topic IDs. `session_protocol` owns session lifecycle, requests, actions, and replay; Telegram cleanup and receipts stay adapter-owned. Current push subscriptions cover Telegram-bound targets; mobile-only sessions remain discoverable through core refresh. See [mobile-safe runtime boundaries](../architecture.md#shared-core-and-planned-mobile-clients).
 - No parse-layer truncation; splitting only at the Telegram send layer.
 - Per-window provider behavior + capability-gated UI.
 - tmux operations centralized in `tmux_manager.py`; no raw tmux shell calls in handlers.
@@ -95,4 +106,4 @@ Topic command panel (`/commands`):
 - In-function imports must carry `# Lazy: <reason>` (or live inside `if TYPE_CHECKING:` / `_reset_*_for_testing`). `make lint` runs `lint-lazy`.
 - Ordering invariant: `bootstrap.wire_runtime_callbacks` must run before `bootstrap.start_session_monitor`. The monitor checks `_callbacks_wired` and raises if violated.
 - Topic-creation seam: window creation state is consolidated in `handlers/topics/window_launch_service.py`. Callers build a `WindowLaunchRequest(user_id, thread_id, provider_name, cwd, mode, pending_text)` and call `launch_window(query, context, request) -> WindowLaunchResult`. Creation-flow key constants (`PENDING_THREAD_ID`, `PENDING_THREAD_TEXT`, `PENDING_WORKTREE_PATH`, etc.) are defined in `topic_creation_draft.py`; callers that access them via `context.user_data` must import only the constants from that module, not bypass the `launch_window` entry point. `TopicCreationDraft` exists in `topic_creation_draft.py` as a future accessor class but has no production callers yet.
-- TranscriptParser delegation: `transcript_parser.py` delegates internally to `_handle_*` methods and tracks `_ParseState`; callers must not bypass the public `parse_entries` API.
+- Transcript normalization: `session_protocol/messages.py` owns `parse_records` and `build_messages`. History uses a verified source snapshot; durable Telegram batches retain receipt checkpoints. All client mutations go through the shared service/executor; handlers must not call multiplexer mutation methods. `transcript_parser.py` and the provider parse APIs are removed.

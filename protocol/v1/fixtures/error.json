@@ -1,0 +1,76 @@
+{
+  "error": {
+    "code": "binding_conflict",
+    "message": "Session binding changed",
+    "details": {
+      "id": "s_00000000000000000000000001",
+      "bindingVersion": 12,
+      "title": "project",
+      "host": "dev-host",
+      "cwd": "/workspace",
+      "gitBranch": null,
+      "provider": "claude",
+      "conversation": {
+        "id": "conv",
+        "historyLimit": "full",
+        "historyGeneration": 0
+      },
+      "status": {
+        "state": "blocked",
+        "detail": "Run uv run pytest",
+        "source": "hook",
+        "since": "2026-10-20T10:33:12Z"
+      },
+      "approvalMode": "default",
+      "panes": [
+        {
+          "id": "p0",
+          "title": "claude",
+          "active": true
+        }
+      ],
+      "openRequests": [
+        {
+          "id": "r_00000000000000000000000002",
+          "sessionId": "s_00000000000000000000000001",
+          "kind": "permission",
+          "source": "hook",
+          "title": "Run uv run pytest",
+          "tool": {
+            "name": "Bash",
+            "kind": "execute",
+            "input": {
+              "command": "uv run pytest"
+            }
+          },
+          "options": [
+            {
+              "id": "1",
+              "label": "Yes",
+              "kind": "allow_once"
+            },
+            {
+              "id": "3",
+              "label": "No",
+              "kind": "reject_once"
+            }
+          ],
+          "responseSchema": null,
+          "openedAt": "2026-10-20T10:33:12Z",
+          "expiresAt": null
+        }
+      ],
+      "capabilities": [
+        "message.send",
+        "run.interrupt",
+        "request.respond",
+        "terminal.view",
+        "terminal.key",
+        "terminal.paste",
+        "session.close",
+        "session.rename"
+      ],
+      "lastActivity": "2026-10-20T10:33:12Z"
+    }
+  }
+}

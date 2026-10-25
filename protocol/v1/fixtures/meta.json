@@ -1,0 +1,8 @@
+{
+  "protocol": "ccgram/1",
+  "server": "1.0.0",
+  "minClient": "1.0.0",
+  "capabilities": [
+    "terminal.view"
+  ]
+}

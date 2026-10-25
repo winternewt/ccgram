@@ -1,9 +1,12 @@
 """Tests for failure_probe — post-send transcript + pane delta probes."""
 
 from types import SimpleNamespace
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from ccgram.providers.codex import CodexProvider
 
 from ccgram.handlers.commands.failure_probe import (
     _extract_pane_delta,
@@ -14,6 +17,18 @@ from ccgram.handlers.commands.failure_probe import (
 
 
 _FP = "ccgram.handlers.commands.failure_probe"
+
+
+def _codex_agent_message(text: str) -> str:
+    return (
+        json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": text},
+            }
+        )
+        + "\n"
+    )
 
 
 class TestExtractProbeErrorLine:
@@ -187,22 +202,12 @@ class TestExtractPaneDelta:
 class TestProbeTranscriptCommandError:
     async def test_uses_incremental_reader_for_codex(self, tmp_path) -> None:
         transcript = tmp_path / "session.jsonl"
-        prefix = "ok\n"
-        suffix = "unknown command: /status\n"
+        prefix = _codex_agent_message("ok")
+        suffix = _codex_agent_message("unknown command: /status")
         transcript.write_text(prefix + suffix, encoding="utf-8")
 
         provider = SimpleNamespace(
-            capabilities=SimpleNamespace(supports_incremental_read=True),
-            parse_transcript_line=lambda line: (
-                {"text": line.strip()} if line.strip() else None
-            ),
-            parse_transcript_entries=lambda entries, pending_tools: (
-                [
-                    SimpleNamespace(role="assistant", text=entry["text"])
-                    for entry in entries
-                ],
-                pending_tools,
-            ),
+            capabilities=SimpleNamespace(name="codex", supports_incremental_read=True),
             read_transcript_file=lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 NotImplementedError("incremental only")
             ),
@@ -217,20 +222,12 @@ class TestProbeTranscriptCommandError:
 
     async def test_rejects_stale_command_in_transcript(self, tmp_path) -> None:
         transcript = tmp_path / "session.jsonl"
-        transcript.write_text('Unknown command: "/other"\n', encoding="utf-8")
+        transcript.write_text(
+            _codex_agent_message('Unknown command: "/other"'), encoding="utf-8"
+        )
 
         provider = SimpleNamespace(
-            capabilities=SimpleNamespace(supports_incremental_read=True),
-            parse_transcript_line=lambda line: (
-                {"text": line.strip()} if line.strip() else None
-            ),
-            parse_transcript_entries=lambda entries, pending_tools: (
-                [
-                    SimpleNamespace(role="assistant", text=entry["text"])
-                    for entry in entries
-                ],
-                pending_tools,
-            ),
+            capabilities=SimpleNamespace(name="codex", supports_incremental_read=True),
         )
 
         result = await _probe_transcript_command_error(
@@ -241,19 +238,17 @@ class TestProbeTranscriptCommandError:
         )
         assert result is None
 
-    async def test_whole_file_not_implemented_returns_none(self, tmp_path) -> None:
+    async def test_transcript_without_messages_returns_none(self, tmp_path) -> None:
         transcript = tmp_path / "session.json"
         transcript.write_text("{}", encoding="utf-8")
 
-        provider = SimpleNamespace(
-            capabilities=SimpleNamespace(supports_incremental_read=False),
-            read_transcript_file=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                NotImplementedError("not implemented")
-            ),
-            parse_transcript_entries=lambda entries, pending_tools: ([], pending_tools),
-        )
+        provider = CodexProvider()
 
-        result = await _probe_transcript_command_error(provider, str(transcript), 0)  # type: ignore[arg-type]
+        result = await _probe_transcript_command_error(
+            provider,
+            str(transcript),
+            0,
+        )
         assert result is None
 
 

@@ -21,37 +21,29 @@ everything through it after ``shlex.quote`` for safety.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import time
 from pathlib import Path
-from typing import Any
 
-from ccgram.providers._jsonl import JsonlProvider, parse_jsonl_line
+from ccgram.providers._jsonl import JsonlProvider
 from ccgram.providers.base import (
-    AgentMessage,
     DiscoveredCommand,
     ProviderCapabilities,
     SessionStartEvent,
     StatusUpdate,
 )
 from ccgram.providers.pi_discovery import _PI_TELEGRAM_BUILTINS, discover_pi_commands
-from ccgram.providers.pi_format import (
-    Pending,
-    extract_text,
-    normalize_pending,
-    parse_assistant,
-    parse_bash_execution,
-    parse_tool_result,
-    parse_user,
-    read_session_header,
-)
+from ccgram.providers.pi_format import read_session_header
 
 PI_QUESTION_FOOTER = "↑↓ navigate • Enter select • Esc cancel • number quick-select"
 
 
 def _pi_sessions_dir() -> Path:
-    return Path.home() / ".pi" / "agent" / "sessions"
+    agent_dir = os.environ.get("PI_CODING_AGENT_DIR")
+    root = Path(agent_dir) if agent_dir else Path.home() / ".pi" / "agent"
+    return root / "sessions"
 
 
 # Cap transcript age when the pane is dead — guards against picking up an
@@ -96,25 +88,6 @@ def _candidate_transcripts(cwd: str) -> list[tuple[float, Path]]:
     return results
 
 
-def _parse_message_entry(
-    role: str,
-    msg: dict[str, Any],
-    pending: Pending,
-    timestamp: str | None = None,
-) -> tuple[list[AgentMessage], Pending]:
-    """Dispatch one envelope's inner ``message`` to the role-specific parser."""
-    if role == "user":
-        return parse_user(msg, timestamp=timestamp), pending
-    if role == "assistant":
-        return parse_assistant(msg, pending, timestamp=timestamp)
-    if role == "toolResult":
-        return parse_tool_result(msg, pending, timestamp=timestamp)
-    if role == "bashExecution":
-        return parse_bash_execution(msg, timestamp=timestamp), pending
-    # branchSummary, compactionSummary, custom → no relay output for v1
-    return [], pending
-
-
 class PiProvider(JsonlProvider):
     """AgentProvider implementation for the pi coding agent CLI."""
 
@@ -122,6 +95,7 @@ class PiProvider(JsonlProvider):
         name="pi",
         launch_command="pi",
         supports_hook=True,
+        hook_install_managed_by_ccgram=True,
         supports_resume=True,
         supports_continue=True,
         supports_structured_transcript=True,
@@ -151,100 +125,6 @@ class PiProvider(JsonlProvider):
         if use_continue:
             return "--continue"
         return ""
-
-    # ── Transcript parsing ───────────────────────────────────────────────
-
-    def parse_transcript_line(self, line: str) -> dict[str, Any] | None:
-        """Unwrap pi's ``message`` envelope into a flat dict keyed by role.
-
-        For session/model_change/etc. entries the raw dict passes through so
-        ``apply_task_entries`` and friends can still inspect them.
-        """
-        raw = parse_jsonl_line(line)
-        if raw is None:
-            return None
-        if raw.get("type") != "message":
-            return raw
-        inner = raw.get("message")
-        if not isinstance(inner, dict):
-            return None
-        role = inner.get("role")
-        if not isinstance(role, str) or not role:
-            return None
-        flat: dict[str, Any] = {k: v for k, v in raw.items() if k != "type"}
-        flat["type"] = role
-        flat["message"] = inner
-        return flat
-
-    def parse_transcript_entries(
-        self,
-        entries: list[dict[str, Any]],
-        pending_tools: dict[str, Any],
-        cwd: str | None = None,  # noqa: ARG002 — kept for protocol compat
-    ) -> tuple[list[AgentMessage], dict[str, Any]]:
-        messages: list[AgentMessage] = []
-        pending = normalize_pending(pending_tools)
-
-        for entry in entries:
-            role = entry.get("type", "")
-            if role not in ("user", "assistant", "toolResult", "bashExecution"):
-                continue
-            inner = entry.get("message")
-            if not isinstance(inner, dict):
-                continue
-            timestamp = entry.get("timestamp")
-            batch, pending = _parse_message_entry(role, inner, pending, timestamp)
-            messages.extend(batch)
-
-        return messages, dict(pending)
-
-    def is_user_transcript_entry(self, entry: dict[str, Any]) -> bool:
-        """Check if this Pi entry is a human turn."""
-        entry_type = entry.get("type")
-        if entry_type == "user":
-            return True
-        message = entry.get("message")
-        if not isinstance(message, dict):
-            return False
-        return message.get("role") == "user"
-
-    def parse_history_entry(self, entry: dict[str, Any]) -> AgentMessage | None:
-        """Parse a raw or flattened Pi transcript entry for history display."""
-        entry_type = entry.get("type")
-        if entry_type not in ("user", "assistant", "message"):
-            return None
-
-        if entry_type == "message":
-            message = entry.get("message")
-            if not isinstance(message, dict):
-                return None
-            role = message.get("role")
-            content = message.get("content", "")
-        else:
-            role = entry_type
-            message = entry.get("message")
-            content = (
-                message.get("content", "")
-                if isinstance(message, dict)
-                else entry.get("content", "")
-            )
-
-        if role not in ("user", "assistant"):
-            return None
-
-        text = extract_text(content).strip()
-        if not text:
-            return None
-        timestamp = entry.get("timestamp")
-        return AgentMessage(
-            text=text,
-            role=role,
-            content_type="text",
-            timestamp=timestamp if isinstance(timestamp, str) else None,
-        )
-
-    # `parse_transcript_line` flattens Pi envelopes for monitor reads; raw
-    # session resolution still uses the overrides above.
 
     def parse_terminal_status(
         self,

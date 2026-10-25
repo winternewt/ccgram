@@ -91,6 +91,7 @@ class TestHandleVoiceMessage:
         with (
             patch(f"{_VH}.config") as config,
             patch(f"{_VH}.thread_router") as router,
+            patch(f"{_VH}.adapter_for", return_value=MagicMock()) as adapter_for,
             patch(
                 f"{_VH}.get_transcriber", return_value=transcriber
             ) as get_transcriber,
@@ -112,6 +113,7 @@ class TestHandleVoiceMessage:
                 transcriber=transcriber,
                 reply=reply,
                 download=download,
+                adapter=adapter_for.return_value,
             )
 
     async def test_transcription_stores_pending_confirmation(
@@ -148,7 +150,12 @@ class TestHandleVoiceMessage:
             update.message, f"🎤 Transcribed:\n\n{_TRANSCRIPT}"
         )
         mock_send.assert_awaited_once_with(
-            _USER_ID, _THREAD_ID, "@0", _TRANSCRIPT, update.message
+            _USER_ID,
+            _THREAD_ID,
+            "@0",
+            _TRANSCRIPT,
+            update.message,
+            context,
         )
         assert context.user_data == {}
 
@@ -293,6 +300,7 @@ class TestHandleVoiceCallback:
         with (
             patch(f"{_VC}.get_thread_id", return_value=_THREAD_ID),
             patch(f"{_VC}.thread_router") as router,
+            patch(f"{_VC}.adapter_for", return_value=MagicMock()) as adapter_for,
             patch(
                 f"{_VC}.send_telegram_to_window",
                 new_callable=AsyncMock,
@@ -306,6 +314,7 @@ class TestHandleVoiceCallback:
             get_provider.return_value.capabilities.chat_first_command_path = False
             yield SimpleNamespace(
                 router=router,
+                adapter=adapter_for.return_value,
                 send_to_window=send_to_window,
                 get_provider=get_provider,
                 ack=ack,
@@ -325,7 +334,12 @@ class TestHandleVoiceCallback:
         await voice_callbacks.handle_voice_callback(update, context)
 
         callback_env.send_to_window.assert_called_once_with(
-            _USER_ID, "@0", _THREAD_ID, "hello", _CHAT_ID
+            _USER_ID,
+            "@0",
+            _THREAD_ID,
+            "hello",
+            _CHAT_ID,
+            adapter=callback_env.adapter,
         )
         update.callback_query.message.delete.assert_called_once()
         # Toast replaced with persistent reactions: 👀 on receive, 🔥 on delivery.
@@ -463,6 +477,7 @@ class TestHandleVoiceCallback:
         assert mock_shell.call_args.args[0].bot is (
             update.callback_query.message.get_bot()
         )
+        assert mock_shell.call_args.kwargs["adapter"] is callback_env.adapter
         callback_env.send_to_window.assert_not_called()
         update.callback_query.message.delete.assert_called_once()
         update.callback_query.answer.assert_called_once_with()

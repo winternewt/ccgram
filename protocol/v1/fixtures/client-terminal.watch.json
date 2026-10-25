@@ -1,0 +1,8 @@
+{
+  "type": "terminal.watch",
+  "data": {
+    "sessionId": "s_00000000000000000000000001",
+    "pane": "p0",
+    "intervalMs": 500
+  }
+}

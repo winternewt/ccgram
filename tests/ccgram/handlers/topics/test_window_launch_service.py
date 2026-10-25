@@ -7,11 +7,10 @@ import contextlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ccgram.multiplexer.base import TopicTargetResult
 from ccgram.handlers.topics.window_launch_service import (
     WindowLaunchRequest,
     _create_topic_window,
@@ -37,23 +36,26 @@ _MODULE = "ccgram.handlers.topics.window_launch_service."
 
 class TestAgentProcessStarted:
     async def test_unknown_when_the_window_is_missing(self) -> None:
-        with patch(f"{_MODULE}tmux_manager") as mock_mux:
-            mock_mux.find_window_by_id = AsyncMock(return_value=None)
-            assert await agent_process_started("@7") is None
+        adapter = MagicMock()
+        adapter.resolve = AsyncMock(side_effect=Exception("missing"))
+        from ccgram.session_protocol.models import ProtocolError
+
+        adapter.resolve.side_effect = ProtocolError(404, "not_found", "missing")
+        assert await agent_process_started("@7", adapter) is None
 
     async def test_shell_is_not_started(self) -> None:
-        with patch(f"{_MODULE}tmux_manager") as mock_mux:
-            mock_mux.find_window_by_id = AsyncMock(
-                return_value=SimpleNamespace(pane_current_command="-zsh")
-            )
-            assert await agent_process_started("@7") is False
+        adapter = MagicMock()
+        adapter.resolve = AsyncMock(
+            return_value=(SimpleNamespace(foreground_argv=("-zsh",)), None)
+        )
+        assert await agent_process_started("@7", adapter) is False
 
     async def test_agent_command_is_started(self) -> None:
-        with patch(f"{_MODULE}tmux_manager") as mock_mux:
-            mock_mux.find_window_by_id = AsyncMock(
-                return_value=SimpleNamespace(pane_current_command="agy")
-            )
-            assert await agent_process_started("@7") is True
+        adapter = MagicMock()
+        adapter.resolve = AsyncMock(
+            return_value=(SimpleNamespace(foreground_argv=("agy",)), None)
+        )
+        assert await agent_process_started("@7", adapter) is True
 
 
 # ── _cwd_within ──────────────────────────────────────────────────────────────
@@ -187,32 +189,54 @@ class TestCreateTopicWindow:
         return context
 
     async def test_native_worktree_delegates_to_one_call(self) -> None:
-        with patch(f"{_MODULE}tmux_manager") as mux:
+        with (
+            patch(f"{_MODULE}tmux_manager") as mux,
+            patch(f"{_MODULE}adapter_for") as adapter_for,
+        ):
             mux.capabilities.native_worktrees = True
-            mux.create_worktree_window = AsyncMock(
-                return_value=(True, "ok", "ccg-feat", "w1:t1")
+            adapter = MagicMock()
+            adapter.create = AsyncMock(
+                return_value=SimpleNamespace(target_id="w1:t1", title="ccg-feat")
             )
+            adapter_for.return_value = adapter
             result = await _create_topic_window(
-                "/repo.worktrees/ccg-feat", "claude", None, self._worktree_context()
+                "/repo.worktrees/ccg-feat",
+                "claude",
+                "normal",
+                None,
+                self._worktree_context(),
             )
 
-        assert result == (True, "ok", "ccg-feat", "w1:t1")
-        mux.create_worktree_window.assert_awaited_once_with(
-            "/repo",
-            "/repo.worktrees/ccg-feat",
-            "ccg/feat",
-            window_name="ccg-feat",
-            launch_command="claude",
+        assert result == (
+            True,
+            "Created topic target 'ccg-feat'",
+            "ccg-feat",
+            "w1:t1",
+        )
+        adapter.create.assert_awaited_once_with(
+            {
+                "provider": "claude",
+                "directory": "/repo",
+                "worktree": True,
+                "branch": "ccg/feat",
+            },
+            approval_mode="normal",
         )
 
     async def test_preselected_workspace_blocks_native_worktree_creation(self) -> None:
         """The native worktree API cannot pin a workspace — refuse, don't override."""
-        with patch(f"{_MODULE}tmux_manager") as mux:
+        with (
+            patch(f"{_MODULE}tmux_manager") as mux,
+            patch(f"{_MODULE}adapter_for") as adapter_for,
+        ):
             mux.capabilities.native_worktrees = True
-            mux.create_worktree_window = AsyncMock()
+            adapter = MagicMock()
+            adapter.create = AsyncMock()
+            adapter_for.return_value = adapter
             success, message, name, window_id = await _create_topic_window(
                 "/repo.worktrees/ccg-feat",
                 "claude",
+                "normal",
                 "ws-chosen",
                 self._worktree_context(),
             )
@@ -220,32 +244,40 @@ class TestCreateTopicWindow:
         assert success is False
         assert message == "Selected workspace cannot create a native worktree"
         assert (name, window_id) == ("", "")
-        mux.create_worktree_window.assert_not_awaited()
+        adapter.create.assert_not_awaited()
 
     async def test_tmux_backend_uses_create_window(self) -> None:
         context = MagicMock()
         context.user_data = {}
-        with patch(f"{_MODULE}tmux_manager") as mux:
-            mux.capabilities.native_worktrees = False
-            mux.capabilities.native_agent_status = False
-            mux.create_window = AsyncMock(return_value=(True, "ok", "proj", "@7"))
-            result = await _create_topic_window("/proj", "claude", "ws1", context)
+        with patch(f"{_MODULE}adapter_for") as adapter_for:
+            adapter = MagicMock()
+            adapter.create = AsyncMock(
+                return_value=SimpleNamespace(target_id="@7", title="proj")
+            )
+            adapter_for.return_value = adapter
+            result = await _create_topic_window(
+                "/proj", "claude", "normal", "ws1", context
+            )
 
-        assert result == (True, "ok", "proj", "@7")
-        mux.create_window.assert_awaited_once_with(
-            "/proj", launch_command="claude", workspace_id="ws1"
+        assert result == (True, "Created topic target 'proj'", "proj", "@7")
+        adapter.create.assert_awaited_once_with(
+            {"provider": "claude", "directory": "/proj", "workspaceId": "ws1"},
+            approval_mode="normal",
         )
 
     async def test_guarded_target_failure_is_reported_not_raised(self) -> None:
         context = MagicMock()
         context.user_data = {}
-        with patch(f"{_MODULE}tmux_manager") as mux:
-            mux.capabilities.native_worktrees = False
-            mux.capabilities.native_agent_status = True
-            mux.capabilities.native_topic_targets = True
-            mux.create_topic_target = AsyncMock(side_effect=RuntimeError("no socket"))
+        with patch(f"{_MODULE}adapter_for") as adapter_for:
+            from ccgram.session_protocol.models import ProtocolError
+
+            adapter = MagicMock()
+            adapter.create = AsyncMock(
+                side_effect=ProtocolError(400, "invalid_request", "no socket")
+            )
+            adapter_for.return_value = adapter
             success, message, name, window_id = await _create_topic_window(
-                "/proj", "claude", None, context
+                "/proj", "claude", "normal", None, context
             )
 
         assert success is False
@@ -285,6 +317,7 @@ class _LaunchMocks:
     session_map: MagicMock
     edit: AsyncMock
     registry: MagicMock
+    adapter: MagicMock
 
 
 @contextlib.contextmanager
@@ -309,16 +342,26 @@ def _launch_env(
         patch(f"{_MODULE}session_map_sync") as session_map,
         patch(f"{_MODULE}safe_edit", new_callable=AsyncMock) as edit,
         patch(f"{_MODULE}provider_registry") as registry,
+        patch(f"{_MODULE}adapter_for") as adapter_for,
         patch("ccgram.providers.resolve_launch_command", return_value=launch_command),
     ):
-        mux.create_topic_target = AsyncMock(
-            return_value=TopicTargetResult("@5", "my-win", "@5")
+        adapter = MagicMock()
+        adapter.create = AsyncMock(
+            return_value=SimpleNamespace(target_id="@5", title="my-win")
         )
+        adapter.close = AsyncMock(return_value=(True, "Closed"))
+        adapter.resolve = AsyncMock(
+            return_value=(
+                SimpleNamespace(
+                    foreground_argv=(launch_command,),
+                    provider={"agy": "antigravity"}.get(launch_command, launch_command),
+                    available=True,
+                ),
+                None,
+            )
+        )
+        adapter_for.return_value = adapter
         mux.stamp_pane_title = AsyncMock()
-        mux.find_window_by_id = AsyncMock(
-            return_value=SimpleNamespace(pane_current_command=launch_command)
-        )
-        mux.kill_window = AsyncMock(return_value=True)
         mux.capabilities.native_worktrees = False
         mux.capabilities.native_agent_status = True
         mux.capabilities.native_topic_targets = True
@@ -343,6 +386,7 @@ def _launch_env(
             session_map=session_map,
             edit=edit,
             registry=registry,
+            adapter=adapter,
         )
 
 
@@ -367,7 +411,10 @@ class TestLaunchWindowSuccess:
         with _launch_env() as m:
             await launch_window(query, context, _request(cwd=str(tmp_path)))
 
-        m.mux.create_topic_target.assert_awaited_once()
+        m.adapter.create.assert_awaited_once_with(
+            {"provider": "claude", "directory": str(tmp_path)},
+            approval_mode="normal",
+        )
         m.router.begin_topic_provisioning.assert_called_once_with(
             100, -100999, thread_id=42, kind="target_for_topic"
         )
@@ -438,10 +485,18 @@ class TestLaunchWindowSuccess:
                 ),
             )
 
-        m.mux.create_topic_target.assert_awaited_once_with(
-            str(tmp_path), launch_command="agy", workspace_id=None
+        m.adapter.create.assert_awaited_once_with(
+            {"provider": "antigravity", "directory": str(tmp_path)},
+            approval_mode="normal",
         )
-        mock_send.assert_awaited_once_with(100, "@5", 42, "hello agent", ANY)
+        mock_send.assert_awaited_once_with(
+            100,
+            "@5",
+            42,
+            "hello agent",
+            -100999,
+            adapter=m.adapter,
+        )
         assert PENDING_THREAD_TEXT not in user_data
 
     @patch(f"{_MODULE}asyncio.sleep", new_callable=AsyncMock)
@@ -456,13 +511,17 @@ class TestLaunchWindowSuccess:
         order: list[str] = []
         panes = iter(["zsh", "zsh", "agy"])
 
-        async def find_window(_window_id: str) -> SimpleNamespace:
+        async def resolve(_window_id: str) -> tuple[SimpleNamespace, None]:
             command = next(panes)
             order.append(command)
-            return SimpleNamespace(pane_current_command=command)
+            return SimpleNamespace(
+                foreground_argv=(command,),
+                provider="shell" if command == "zsh" else "antigravity",
+                available=True,
+            ), None
 
         with _launch_env(launch_command="agy") as m:
-            m.mux.find_window_by_id = AsyncMock(side_effect=find_window)
+            m.adapter.resolve = AsyncMock(side_effect=resolve)
             m.router.commit_topic_provisioning.side_effect = lambda *_a, **_k: (
                 order.append("bind") or True
             )
@@ -493,8 +552,13 @@ class TestLaunchWindowSuccess:
                 return_value=True,
             ),
         ):
-            m.mux.find_window_by_id = AsyncMock(
-                return_value=SimpleNamespace(pane_current_command="zsh")
+            m.adapter.resolve = AsyncMock(
+                return_value=(
+                    SimpleNamespace(
+                        foreground_argv=("zsh",), provider="shell", available=True
+                    ),
+                    None,
+                )
             )
             result = await launch_window(
                 _make_query(),
@@ -506,19 +570,8 @@ class TestLaunchWindowSuccess:
         assert mock_sleep.await_count == 50
         m.router.commit_topic_provisioning.assert_not_called()
         m.router.bind_thread.assert_not_called()
-        m.mux.kill_window.assert_not_awaited()
+        m.adapter.close.assert_not_awaited()
         assert user_data[PENDING_THREAD_ID] == 42
-
-    async def test_hook_provider_does_not_poll_pane_process(self, tmp_path) -> None:
-        with _launch_env(supports_hook=True) as m:
-            await launch_window(
-                _make_query(),
-                _make_context({PENDING_THREAD_ID: 42}),
-                _request(cwd=str(tmp_path)),
-            )
-
-        m.session_map.wait_for_session_map_entry.assert_awaited_once()
-        m.mux.find_window_by_id.assert_not_awaited()
 
 
 class TestLaunchWindowFailure:
@@ -529,8 +582,10 @@ class TestLaunchWindowFailure:
         context = _make_context(user_data)
 
         with _launch_env() as m:
-            m.mux.create_topic_target = AsyncMock(
-                side_effect=RuntimeError("tmux error")
+            from ccgram.session_protocol.models import ProtocolError
+
+            m.adapter.create = AsyncMock(
+                side_effect=ProtocolError(400, "invalid_request", "tmux error")
             )
             result = await launch_window(
                 _make_query(), context, _request(cwd=str(tmp_path))
@@ -547,16 +602,20 @@ class TestLaunchWindowFailure:
         self, tmp_path
     ) -> None:
         with _launch_env() as m:
-            m.mux.create_topic_target = AsyncMock(
-                side_effect=RuntimeError("multiplexer socket unavailable")
-            )
-            result = await launch_window(
-                _make_query(),
-                _make_context({PENDING_THREAD_ID: 42}),
-                _request(cwd=str(tmp_path)),
-            )
+            from ccgram.session_protocol.models import ProtocolError
 
-        assert result.success is False
+            m.adapter.create = AsyncMock(
+                side_effect=ProtocolError(
+                    503, "backend_unavailable", "multiplexer socket unavailable"
+                )
+            )
+            with pytest.raises(ProtocolError, match="multiplexer socket unavailable"):
+                await launch_window(
+                    _make_query(),
+                    _make_context({PENDING_THREAD_ID: 42}),
+                    _request(cwd=str(tmp_path)),
+                )
+
         m.router.abort_topic_provisioning.assert_not_called()
         m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
 
@@ -572,7 +631,7 @@ class TestLaunchWindowFailure:
                     _request(cwd=str(tmp_path)),
                 )
 
-        m.mux.create_topic_target.assert_not_awaited()
+        m.adapter.create.assert_not_awaited()
         m.router.abort_topic_provisioning.assert_called_once_with(
             "claim-1", target_confirmed_absent=True
         )
@@ -597,7 +656,7 @@ class TestLaunchWindowFailure:
                     _request(cwd=str(tmp_path)),
                 )
 
-        m.mux.kill_window.assert_not_awaited()
+        m.adapter.close.assert_not_awaited()
         m.router.abort_topic_provisioning.assert_not_called()
         m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
 
@@ -610,10 +669,10 @@ class TestLaunchWindowFailure:
         async def create_target(*_args, **_kwargs):
             started.set()
             await release.wait()
-            return TopicTargetResult("@5", "my-win", "@5")
+            return SimpleNamespace(target_id="@5", title="my-win")
 
         with _launch_env() as m:
-            m.mux.create_topic_target = AsyncMock(side_effect=create_target)
+            m.adapter.create = AsyncMock(side_effect=create_target)
             task = asyncio.create_task(
                 launch_window(
                     _make_query(),
@@ -627,7 +686,7 @@ class TestLaunchWindowFailure:
             with pytest.raises(asyncio.CancelledError):
                 await task
 
-        m.mux.kill_window.assert_awaited_once_with("@5")
+        m.adapter.close.assert_awaited_once_with("@5")
         m.router.abort_topic_provisioning.assert_called_once_with(
             "claim-1", target_confirmed_absent=True
         )
@@ -644,7 +703,7 @@ class TestLaunchWindowFailure:
                     _request(cwd=str(tmp_path)),
                 )
 
-        m.mux.kill_window.assert_awaited_once_with("@5")
+        m.adapter.close.assert_awaited_once_with("@5")
         m.orchestration.clear_pending_creation.assert_called_once_with("@5")
         m.router.abort_topic_provisioning.assert_called_once_with(
             "claim-1", target_confirmed_absent=True
@@ -664,7 +723,7 @@ class TestLaunchWindowFailure:
                 return_value=False,
             ),
         ):
-            m.mux.kill_window = AsyncMock(
+            m.adapter.close = AsyncMock(
                 side_effect=lambda target_id: (
                     cleanup_order.append(f"close:{target_id}") or True
                 )
@@ -684,7 +743,7 @@ class TestLaunchWindowFailure:
             )
 
         assert result.success is False
-        m.mux.kill_window.assert_not_awaited()
+        m.adapter.close.assert_not_awaited()
         m.router.abort_topic_provisioning.assert_called_once_with(
             "claim-1", target_confirmed_absent=True
         )
@@ -713,7 +772,7 @@ class TestLaunchWindowFailure:
             )
 
         assert not result.success and "still starting" in (result.error_message or "")
-        m.mux.kill_window.assert_not_awaited()
+        m.adapter.close.assert_not_awaited()
         m.router.abort_topic_provisioning.assert_not_called()
         m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
         m.orchestration.clear_pending_creation.assert_called_once_with("@5")
@@ -738,7 +797,7 @@ class TestLaunchWindowFailure:
                 )
 
         assert not result.success
-        m.mux.kill_window.assert_not_awaited()
+        m.adapter.close.assert_not_awaited()
         m.router.mark_provisioning_uncertain.assert_called_once_with("claim-1")
 
     async def test_pending_text_send_failure_reports_back_to_the_topic(

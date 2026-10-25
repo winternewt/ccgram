@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ccgram.dev/protocol/v1/schemas/Terminal.json",
+  "title": "Terminal",
+  "type": "object",
+  "properties": {
+    "pane": {
+      "type": "string"
+    },
+    "rows": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cols": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ansi": {
+      "type": "string"
+    },
+    "hash": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "pane",
+    "rows",
+    "cols",
+    "ansi",
+    "hash"
+  ],
+  "additionalProperties": true
+}
