@@ -15,14 +15,14 @@ release taken, and the patch table, which counts the fork's own commits on top o
 
 ## Patch table
 
-**Count: 17 open upstream-bound (all unfiled), 6 open local, 0 retired.** Rows: the fork's commits
+**Count: 18 open upstream-bound (all unfiled), 6 open local, 0 retired.** Rows: the fork's commits
 past v4.16.0 touching `src/` or `tests/`, merges excluded, oldest first. Records and plans get no
 row. A fate of "upstream-bound" means the change is not specific to this fork and could be filed;
 none is filed until the person asks (the priming, "Fixes for the upstream"). Fates were first set by
 the seat on 2026-10-17 from the commit messages; the person may move any.
 
-Check against git: `git log --no-merges --oneline v4.16.0..main -- src tests` (until the first merge
-of an upstream release; then from that merge's base).
+Check against git: `git log --no-merges --oneline <last release merged>..main -- src tests` (now
+`v4.18.4`) lists exactly the open rows, less each reverted pair and each closed row.
 
 | Commit | Why it exists | Upstream issue / PR | Fate | Retired by |
 |---|---|---|---|---|
@@ -49,3 +49,4 @@ of an upstream release; then from that merge's base).
 | 078146e | `ALLOWED_USERS` and `CCGRAM_GROUP_ID` had no way to be found from ccgram itself: `scripts/discover_telegram_ids.py` | none | upstream-bound | |
 | c57605d | the session core read and hashed every transcript whole each second: an unchanged one is no longer read, a grown one reads only its tail | none (issue drafted for the person) | upstream-bound | |
 | 3154319 | a busy session's transcript was decoded and rebuilt whole on every change (about 7 s per change at 343 MB): only appended lines are parsed, and the store keeps no copy of the file (fixes c57605d's memo, which did) | none (issue drafted for the person) | upstream-bound | |
+| 92675e6 | the parsed messages of a session left unchanged for five minutes were dropped, so its next line cost a whole re-parse (fixes 3154319) | none (with the issue for 3154319) | upstream-bound | |

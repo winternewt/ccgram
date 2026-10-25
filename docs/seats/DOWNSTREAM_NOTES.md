@@ -143,7 +143,12 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   the merge `0717583` (folds in its message; superseded check: none of the 21 rows taken verbatim or
   superseded, no reverts), `c57605d` (the observation cache) and `3154319` (only appended lines are
   parsed; the store keeps the last 4 KiB, not the file). On the 343 MB transcript a grown tick takes
-  about 2 ms instead of about 7 s. Unit suite 8297 passed, integration 375 passed.
+  about 2 ms instead of about 7 s; `92675e6` keeps an idle session's parsed messages. Unit suite
+  8298 passed, integration 375 passed. One upstream test is order-dependent and fails in about one
+  run in four under random ordering, before and after these commits:
+  `test_session_monitor.py::TestNewWindowDetection::test_callback_error_does_not_crash` resets
+  `monitor._last_session_map`, which nothing reads now; reconcile reads the global
+  `session_lifecycle` map, which an earlier test can leave holding `@1`. Unchanged from `v4.18.4`.
 - The incremental build was put to the person on the desk (#141), default: build it, then push
   `main`. Built under that default while they were away (2026-10-25).
 - Upstream issue for the 1 Hz read: drafted outside the repository, to put to the person with its
@@ -152,7 +157,8 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 ## Patch table
 
-- In `docs/FORK.md`: 23 rows, 17 open upstream-bound (all unfiled), 6 open local, 0 retired.
+- In `docs/FORK.md`: 24 rows, 18 open upstream-bound (all unfiled), 6 open local, 0 retired;
+  checked against git 2026-10-25 (`git log --no-merges v4.18.4..main -- src tests`: 24).
 
 ## The bot's logs
 
