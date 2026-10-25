@@ -110,6 +110,16 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 - In `docs/FORK.md`: 21 rows, 15 open upstream-bound (all unfiled), 6 open local, 0 retired.
 
+## The bot's logs
+
+- The bot runs on another host; its service logs come from that host's sysadmin seat, by direct
+  message with a window and what is sought (it replies with an excerpt, newest 200 lines at most).
+  `wake_from` carries `*/sysadmin` so its replies wake this seat.
+- Seen there 2026-10-25: "Complete assistant message has no routed topic; dropped" for two sessions.
+  That warning is upstream's (#288, `message_routing._handle_unroutable_message`), made for a
+  tracked session whose topic binding lags (after a restart or an adoption) or is absent. Not
+  looked into yet; first ask whether those sessions had a topic at that time.
+
 ## Seats kit
 
 - The pin in `.claude/settings.local.json` names v0.1.89 (moved 2026-10-25), but on the old host the
