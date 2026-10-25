@@ -119,6 +119,10 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 ## Carried from the old host's memory (it does not travel)
 
+- The bot-driven plugin reload (ending an answer with a line the live bot typed into the pane)
+  belonged to the old host, where the bot drove the seat's session. Here the person types the
+  reload; the priming's "Reloading plugins" says so (2026-10-25).
+
 - This fork follows the upstream's code style, not the person's own standards: lazy imports
   annotated `# Lazy:` (linted), relative imports, `__all__` re-exports.
 - A branch for the upstream carries exactly one fix; anything extra lands on our `main`. The person,

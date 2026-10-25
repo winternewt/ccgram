@@ -25,7 +25,7 @@ name.
 | record | `docs/FORK.md`: a verdict per release (what was read in full, what was not), and the patch table (below) |
 | marker | `main` itself: the bot already installs from it, so no marker tag is needed (the kit's D101 is for a tag). `main` moves only to a commit that passed the gate: a merge or a commit of the fork's own is made in a worktree, gated there, then pushed as a fast-forward |
 | what installs from the marker | `/upgrade`, sent by the person in Telegram (`handlers/upgrade.py`): `uv tool upgrade` from `main`, then the bot re-executes itself |
-| tests | in the worktree, `uv sync --extra dev` first (the test plugins are in that extra). Then slices, never the whole suite at once (the full run is killed for memory): the tests of what changed, `uv run pytest <paths> -m "not integration and not e2e" -n 2`; then `tests/ccgram` with `--ignore=tests/ccgram/handlers --ignore=tests/ccgram/providers`, then each of those two; then `tests/integration -m "not llm"` |
+| tests | in the worktree, `uv sync --extra dev` first (the test plugins are in that extra). Then slices (on the old host the full run was killed for memory; this host has far more, so a wider run may work, tried once before relying on it): the tests of what changed, `uv run pytest <paths> -m "not integration and not e2e" -n 2`; then `tests/ccgram` with `--ignore=tests/ccgram/handlers --ignore=tests/ccgram/providers`, then each of those two; then `tests/integration -m "not llm"` |
 
 The rows of this table are the person's facts; the seat changes a row only on their word. Never push
 a tag to `origin` (no `--tags`, no `--follow-tags`): the upstream's release workflow fires on `v*` in
@@ -92,8 +92,8 @@ the old code first; each enters the patch table with its fate, usually local.
 
 ## What wakes it
 
-A new tag on `upstream`, through the watcher `upstream` in `.blueprints.toml`; the person, here or in
-Telegram. Only a `tag v* pushed` line is acted on; the upstream's trunk moving is not a release.
+A new tag on `upstream`, through the watcher `upstream` in `.blueprints.toml`; the person, in this
+session (no bot drives the seat's session on this host, so Telegram does not reach it). Only a `tag v* pushed` line is acted on; the upstream's trunk moving is not a release.
 
 ## Grant
 
@@ -105,7 +105,7 @@ stays). Use it without asking: the person, 2026-10-17, granting the push to `mai
 Not covered, so the person's: any public post (drafted, posted on their
 word on the exact text, as above); a force push or any rewrite of pushed history; pushing a tag;
 deleting a tag, a `backup/*` branch or a branch it did not make; `/upgrade` or any restart of the bot
-(the seat is driven through the bot, and a restart cuts its own channel).
+(the bot runs on another host, for the person's own sessions there).
 
 After the person sends `/upgrade`, a setting the old build would refuse (a new value for an option
 with fixed choices) is set only then, or the bot does not start. Proof that it restarted is the log's
@@ -124,9 +124,10 @@ work here ... Scratch it." So the seat never ends an answer with a line meant to
 The machine's own setup: the terminal multiplexer's configuration, the person's panes, the system.
 One run changed the multiplexer's mouse setting unasked; the person reversed it eight minutes later.
 
-## The person reads through Telegram
+## The person reads in this session
 
-A reply stays under about 3000 characters, the action first.
+The action first, then short: about eight lines (the base's report rule). The 3000-character
+ceiling was Telegram's, from the old host where the bot drove this session.
 
 ## What goes to the person's desk
 
