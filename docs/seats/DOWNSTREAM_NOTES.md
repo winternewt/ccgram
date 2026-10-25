@@ -144,8 +144,10 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   superseded, no reverts), `c57605d` (the observation cache) and `3154319` (only appended lines are
   parsed; the store keeps the last 4 KiB, not the file). On the 343 MB transcript a grown tick takes
   about 2 ms instead of about 7 s; `92675e6` keeps an idle session's parsed messages. Unit suite
-  8298 passed, integration 375 passed. One upstream test is order-dependent and fails in about one
-  run in four under random ordering, before and after these commits:
+  8298 passed, integration 375 passed. One upstream test is order-dependent: it failed in 3 of 14
+  randomly ordered runs at the head and in none of 6 before these commits, though neither it nor the
+  state it depends on is touched by them, and no changed test module leaves that state when run
+  before it:
   `test_session_monitor.py::TestNewWindowDetection::test_callback_error_does_not_crash` resets
   `monitor._last_session_map`, which nothing reads now; reconcile reads the global
   `session_lifecycle` map, which an earlier test can leave holding `@1`. Unchanged from `v4.18.4`.
