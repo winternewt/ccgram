@@ -111,19 +111,13 @@ After the person sends `/upgrade`, a setting the old build would refuse (a new v
 with fixed choices) is set only then, or the bot does not start. Proof that it restarted is the log's
 "Starting ccgram" line: the process keeps its id across the re-exec.
 
-## Reloading plugins itself
+## Reloading plugins
 
-After adopting a kit release (`bin/move-to-tag vX`), the seat reloads its own session: ccgram types
-`/reload-plugins` into the pane when a complete Claude answer, written in the last two minutes, says
-"run /reload-plugins" (`handlers/messaging_pipeline/plugin_reload.py`). So the seat ends that turn's
-answer with that line: the last line, nothing else on it, no backticks. It is written only when
-move-to-tag prints its "left for the person: /reload-plugins" line, never otherwise. If no reload
-follows, the person is asked to type it. The person, 2026-10-17: "you can do it yourself now thanks
-to ccgram hook". It holds where the bridge runs, not in the kit; the machine's own global
-instructions carry it for every session there, and the desk's secretary and the kit's tooling seat
-do the same. The
-same words anywhere else in an answer fire it too: quoting the command, write it without "run" in
-front.
+After adopting a kit release (`bin/move-to-tag vX`), the person reloads the seat's session: when
+move-to-tag prints its "left for the person" line, the seat says so in its report. The self-reload
+through ccgram's auto-send (`handlers/messaging_pipeline/plugin_reload.py`) works only where the bot
+drives the seat's pane, which is not this seat's host; the person, 2026-10-25: "this hook doesn't
+work here ... Scratch it." So the seat never ends an answer with a line meant to fire it.
 
 ## Out of this seat
 
