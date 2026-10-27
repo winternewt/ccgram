@@ -49,6 +49,11 @@ _TOPIC_CREATE_TRANSIENT_RETRIES = 1
 _TOPIC_CREATE_TRANSIENT_BACKOFF_S = 1.0
 _TOPIC_CREATE_FAILURE_BACKOFF_S = 30.0
 
+# Unbound windows are re-emitted every poll; warn about a missing target
+# chat at most this often.
+_NO_TARGET_CHAT_WARN_INTERVAL_S = 600.0
+_no_target_chat_warned_at: float | None = None
+
 
 # Serializes every auto-create attempt for one window. Session-monitor,
 # startup adoption, and /sync can otherwise create duplicate topics concurrently.
@@ -299,6 +304,9 @@ def collect_target_chats(window_id: str) -> set[int]:
         )
 
     if not seen_chats:
+        # The explicit setting stays ahead of the remembered group. With it
+        # set, bot.py filters every handler to that chat, so both agree.
+        remembered = thread_router.last_group_chat_id
         if config.group_id:
             seen_chats.add(config.group_id)
             logger.info(
@@ -306,13 +314,38 @@ def collect_target_chats(window_id: str) -> set[int]:
                 config.group_id,
                 window_id,
             )
-        else:
-            logger.debug(
-                "No group chats found for auto-topic creation (window %s)",
+        elif isinstance(remembered, int) and remembered < 0:
+            seen_chats.add(remembered)
+            logger.info(
+                "Cold-start: using last group chat %d for auto-topic (window %s)",
+                remembered,
                 window_id,
             )
+        else:
+            _warn_no_target_chat(window_id)
 
     return seen_chats
+
+
+def _warn_no_target_chat(window_id: str) -> None:
+    """Say, at most every few minutes, that new windows get no topic."""
+    global _no_target_chat_warned_at
+    now = time.monotonic()
+    if (
+        _no_target_chat_warned_at is not None
+        and now - _no_target_chat_warned_at < _NO_TARGET_CHAT_WARN_INTERVAL_S
+    ):
+        logger.debug(
+            "No group chats found for auto-topic creation (window %s)", window_id
+        )
+        return
+    _no_target_chat_warned_at = now
+    logger.warning(
+        "No group chat known for auto-topic creation; window %s gets no topic "
+        "and its replies are dropped. Set CCGRAM_GROUP_ID, or send /sync "
+        "in the forum group.",
+        window_id,
+    )
 
 
 def _chat_window_is_free(user_id: int, chat_id: int, window_id: str) -> bool:

@@ -470,6 +470,11 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         chat_id=update.message.chat.id,
         thread_id=update.message.message_thread_id,
     )
+    chat = update.message.chat
+    if getattr(chat, "is_forum", False):
+        # The group /sync was sent in becomes the auto-topic fallback, so
+        # Fix can adopt orphaned windows even when no topic is left.
+        thread_router.remember_group_chat(chat.id)
     status_msg = await safe_reply(update.message, "🔍 State audit…")
     adapter = adapter_for(context.bot_data)
     client = PTBTelegramClient(update.get_bot())

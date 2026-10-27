@@ -140,6 +140,10 @@ class ThreadRouter:
         # "user_id:thread_id" -> chat_id for legacy and chat-scoped bindings.
         self.group_chat_ids: dict[str, int] = {}
         self.default_group_id = default_group_id
+        # The forum group a topic was last bound or observed in. Unlike
+        # group_chat_ids it outlives the topic, so auto-topic creation still
+        # has a group after the last topic is deleted.
+        self.last_group_chat_id: int | None = None
         # window_id -> display name (window_name)
         self.window_display_names: dict[str, str] = {}
         # Window IDs whose display names were explicitly chosen by a user.
@@ -163,6 +167,7 @@ class ThreadRouter:
         """Clear all state.  Used for test isolation."""
         self.thread_bindings.clear()
         self.group_chat_ids.clear()
+        self.last_group_chat_id = None
         self.chat_thread_bindings.clear()
         self.private_topic_chats.clear()
         self.window_display_names.clear()
@@ -291,6 +296,7 @@ class ThreadRouter:
                 for uid, bindings in self.thread_bindings.items()
             },
             "group_chat_ids": self.group_chat_ids,
+            "last_group_chat_id": self.last_group_chat_id,
             "chat_thread_bindings": {
                 f"{uid}:{chat_id}:{tid}": wid
                 for (uid, chat_id, tid), wid in self.chat_thread_bindings.items()
@@ -342,6 +348,10 @@ class ThreadRouter:
             for uid, bindings in data.get("thread_bindings", {}).items()
         }
         self.group_chat_ids = data.get("group_chat_ids", {})
+        last_group = data.get("last_group_chat_id")
+        self.last_group_chat_id = (
+            last_group if isinstance(last_group, int) and last_group < 0 else None
+        )
         self.chat_thread_bindings = {}
         for key, wid in data.get("chat_thread_bindings", {}).items():
             uid, chat_id, tid = (int(part) for part in key.split(":", 2))
@@ -1272,6 +1282,7 @@ class ThreadRouter:
             )
         if chat_id is not None:
             self._bind_chat_scoped(user_id, chat_id, thread_id, window_id)
+            self._remember_group_chat(chat_id)
         else:
             if user_id not in self.thread_bindings:
                 self.thread_bindings[user_id] = {}
@@ -1543,6 +1554,7 @@ class ThreadRouter:
             return
         if self.group_chat_ids.get(key) != chat_id:
             self.group_chat_ids[key] = chat_id
+            self._remember_group_chat(chat_id)
             self._schedule_save()
             logger.debug(
                 "Stored group chat_id %d for user %d, thread %d",
@@ -1550,6 +1562,20 @@ class ThreadRouter:
                 user_id,
                 thread_id,
             )
+
+    def _remember_group_chat(self, chat_id: int | None) -> bool:
+        """Keep a group chat as the auto-topic fallback; return whether it changed."""
+        if not isinstance(chat_id, int) or chat_id >= 0:
+            return False
+        if self.last_group_chat_id == chat_id:
+            return False
+        self.last_group_chat_id = chat_id
+        return True
+
+    def remember_group_chat(self, chat_id: int) -> None:
+        """Record a forum group the bot was used in, for auto-topic creation."""
+        if self._remember_group_chat(chat_id):
+            self._schedule_save()
 
     def resolve_chat_id(self, user_id: int, thread_id: int | None = None) -> int:
         """Resolve the chat_id for sending messages.

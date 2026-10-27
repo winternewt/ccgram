@@ -518,6 +518,10 @@ Both groups use the same configuration, session discovery, allowed users, and st
 They do not provide separate control or security boundaries. Use separate machines
 or OS users when those settings and terminal targets must be isolated.
 
+A new window gets a topic in each group that has a bound topic. When no group has
+one (the last topic was deleted), it goes to the group the bot was last used in: the
+last group a topic was bound in, or where `/sync` was last sent.
+
 Set `CCGRAM_GROUP_ID` to one group ID to restrict the process to that group. It then
 ignores updates from other groups. To find the ID, add
 [@RawDataBot](https://t.me/RawDataBot) to the group; it replies with the negative chat ID.

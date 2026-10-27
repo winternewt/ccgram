@@ -1926,3 +1926,26 @@ async def test_sync_does_not_send_live_topic_probes(_patch_deps, fix, count):
     assert "Sync complete" in edit.call_args.args[1]
     assert bot.edit_forum_topic.await_count == int(fix)
     assert "check incomplete" not in edit.call_args.args[1]
+
+
+@pytest.mark.parametrize(("is_forum", "remembered"), [(True, True), (False, False)])
+async def test_sync_in_a_forum_group_remembers_it(
+    _patch_deps, is_forum: bool, remembered: bool
+) -> None:
+    *_, mock_tr, _mock_tm, _mock_cfg = _patch_deps
+    update = MagicMock()
+    update.effective_user.id = 100
+    update.message = AsyncMock()
+    update.message.chat = MagicMock(id=-100777, is_forum=is_forum)
+    update.get_bot.return_value = AsyncMock()
+
+    with (
+        patch("ccgram.handlers.sync_command.safe_reply", new_callable=AsyncMock),
+        patch("ccgram.handlers.sync_command.safe_edit", new_callable=AsyncMock),
+    ):
+        await sync_command(update, MagicMock())
+
+    if remembered:
+        mock_tr.remember_group_chat.assert_called_once_with(-100777)
+    else:
+        mock_tr.remember_group_chat.assert_not_called()

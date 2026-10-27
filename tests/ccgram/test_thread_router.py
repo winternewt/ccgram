@@ -1198,3 +1198,56 @@ class TestScheduleSave:
         router._schedule_save = lambda: calls.append(1)
         router.set_display_name("@1", "proj")
         assert len(calls) == 1
+
+
+class TestLastGroupChat:
+    def test_group_outlives_its_last_topic(self, router: ThreadRouter) -> None:
+        router.bind_thread(100, 42, "@1", chat_id=-100555)
+        router.unbind_thread(100, 42, chat_id=-100555)
+        router.group_chat_ids.clear()
+        assert list(router.iter_thread_bindings()) == []
+        assert router.last_group_chat_id == -100555
+
+    def test_recorded_legacy_chat_is_remembered(self, router: ThreadRouter) -> None:
+        router.set_group_chat_id(100, 42, -100666)
+        assert router.last_group_chat_id == -100666
+
+    def test_private_chat_is_not_a_group(self, router: ThreadRouter) -> None:
+        router.bind_thread(100, 42, "@1", chat_id=-100555)
+        router.bind_thread(100, 43, "@2", chat_id=100)
+        router.remember_group_chat(100)
+        assert router.last_group_chat_id == -100555
+
+    def test_remember_saves_only_on_change(self, router: ThreadRouter) -> None:
+        calls = []
+        router._schedule_save = lambda: calls.append(1)
+        router.remember_group_chat(-100777)
+        router.remember_group_chat(-100777)
+        assert router.last_group_chat_id == -100777
+        assert len(calls) == 1
+
+    def test_round_trip(self, router: ThreadRouter) -> None:
+        router.remember_group_chat(-100777)
+        restored = ThreadRouter(
+            schedule_save=lambda: None, has_window_state=lambda _wid: False
+        )
+        restored.from_dict(router.to_dict())
+        assert restored.last_group_chat_id == -100777
+
+    @pytest.mark.parametrize("raw", [None, 5, "-100777"])
+    def test_absent_or_invalid_state_loads_as_none(
+        self, router: ThreadRouter, raw: object
+    ) -> None:
+        data = router.to_dict()
+        data["last_group_chat_id"] = raw
+        router.remember_group_chat(-100777)
+        router.from_dict(data)
+        assert router.last_group_chat_id is None
+        del data["last_group_chat_id"]
+        router.from_dict(data)
+        assert router.last_group_chat_id is None
+
+    def test_reset_forgets(self, router: ThreadRouter) -> None:
+        router.remember_group_chat(-100777)
+        router.reset()
+        assert router.last_group_chat_id is None

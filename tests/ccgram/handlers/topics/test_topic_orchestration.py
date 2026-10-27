@@ -158,6 +158,60 @@ class TestCollectTargetChats:
 
             assert collect_target_chats("@5") == {100}
 
+    def test_fallback_to_last_group_chat(self):
+        with (
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.thread_router"
+            ) as mock_router,
+            patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
+        ):
+            mock_router.iter_private_topic_chat_ids.return_value = []
+            mock_router.iter_thread_bindings.return_value = []
+            mock_router.group_chat_ids = {}
+            mock_router.last_group_chat_id = -4004
+            mock_config.group_id = None
+            assert collect_target_chats("@5") == {-4004}
+
+    def test_config_group_id_wins_over_last_group_chat(self):
+        with (
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.thread_router"
+            ) as mock_router,
+            patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
+        ):
+            mock_router.iter_private_topic_chat_ids.return_value = []
+            mock_router.iter_thread_bindings.return_value = []
+            mock_router.group_chat_ids = {}
+            mock_router.last_group_chat_id = -4004
+            mock_config.group_id = -3003
+            assert collect_target_chats("@5") == {-3003}
+
+    def test_no_chat_warns_once_per_interval(self):
+        with (
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.thread_router"
+            ) as mock_router,
+            patch("ccgram.handlers.topics.topic_orchestration.config") as mock_config,
+            patch("ccgram.handlers.topics.topic_orchestration.logger") as mock_logger,
+            patch(
+                "ccgram.handlers.topics.topic_orchestration._no_target_chat_warned_at",
+                None,
+            ),
+            patch(
+                "ccgram.handlers.topics.topic_orchestration.time.monotonic",
+                side_effect=[1000.0, 1002.0, 1700.0],
+            ),
+        ):
+            mock_router.iter_private_topic_chat_ids.return_value = []
+            mock_router.iter_thread_bindings.return_value = []
+            mock_router.group_chat_ids = {}
+            mock_router.last_group_chat_id = None
+            mock_config.group_id = None
+            for _ in range(3):
+                assert collect_target_chats("@5") == set()
+            assert mock_logger.warning.call_count == 2
+            assert "CCGRAM_GROUP_ID" in mock_logger.warning.call_args[0][0]
+
 
 class TestHandleNewWindow:
     async def test_serializes_concurrent_creation_for_same_window(self) -> None:
