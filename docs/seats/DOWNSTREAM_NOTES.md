@@ -178,8 +178,9 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   `CCGRAM_GROUP_ID` in the bot's env file and a restart; in place by 2026-10-27 (the person, on desk
   #138: "groupid is in"). Code fix: the person chose it on desk #138 (2026-10-27, "A: 1"); landed as
   `c7341a4` (the router keeps the last forum group, `/sync` records its group, the empty case warns
-  at most every 10 minutes). It reaches the bot at the person's `/upgrade`. Upstream issue drafted
-  outside the repo, not posted, waiting on the person's word. The desk question still told the person
+  at most every 10 minutes). It reaches the bot at the person's `/upgrade`. Upstream issue drafted;
+  it and the transcript-read draft wait on the person's word on desk #162 (both texts inline there;
+  default: nothing posted). The desk question still told the person
   to set the value after they had: they asked for a kit report, filed as kit #198 (a seat keeping an
   open desk question current).
 
