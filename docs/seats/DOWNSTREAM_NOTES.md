@@ -159,8 +159,8 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 ## Patch table
 
-- In `docs/FORK.md`: 24 rows, 18 open upstream-bound (all unfiled), 6 open local, 0 retired;
-  checked against git 2026-10-25 (`git log --no-merges v4.18.4..main -- src tests`: 24).
+- In `docs/FORK.md`: 26 rows, 20 open upstream-bound (all unfiled), 6 open local, 0 retired;
+  checked against git 2026-10-27 (`git log --no-merges v4.18.4..main -- src tests`: 26).
 
 ## The bot's logs
 
@@ -172,11 +172,16 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   the sysadmin seat, confirmed by this seat in the fork and unchanged in `v4.18.4`):
   `topic_orchestration.collect_target_chats` finds chats only through bindings and
   `group_chat_ids`, which are keyed per topic and popped on unbind; the last two topics were deleted
-  by the dead-session cleanup before the reboot, so the set was empty, `CCGRAM_GROUP_ID` is unset
-  there, and the empty case logs at debug only. `/sync` never records its chat, so its Fix does
+  by the dead-session cleanup before the reboot, so the set was empty, `CCGRAM_GROUP_ID` was unset
+  there, and the empty case logged at debug only. `/sync` never records its chat, so its Fix does
   nothing; startup's "adopted N" counts attempts. No upstream issue. Workaround, the person's:
-  `CCGRAM_GROUP_ID` in the bot's env file and a restart. Code fix: on the person's desk (#138),
-  default none.
+  `CCGRAM_GROUP_ID` in the bot's env file and a restart; in place by 2026-10-27 (the person, on desk
+  #138: "groupid is in"). Code fix: the person chose it on desk #138 (2026-10-27, "A: 1"); landed as
+  `c7341a4` (the router keeps the last forum group, `/sync` records its group, the empty case warns
+  at most every 10 minutes). It reaches the bot at the person's `/upgrade`. Upstream issue drafted
+  outside the repo, not posted, waiting on the person's word. The desk question still told the person
+  to set the value after they had: they asked for a kit report, filed as kit #198 (a seat keeping an
+  open desk question current).
 
 ## Seats kit
 
