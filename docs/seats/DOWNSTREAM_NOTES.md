@@ -183,8 +183,8 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 - The pin in `.claude/settings.local.json` names v0.1.89 (moved 2026-10-25), but on the old host the
   install record stayed at 0.1.87: the machine-wide marketplace record kept the old ref. Filed as the
   kit's #155. On the new host the pin and the install record both moved to v0.1.91 by
-  `bin/move-to-tag.py` (2026-10-25), then to v0.1.92 and v0.1.93 the same day, and to v0.1.95 on
-  2026-10-26; the watchdog runs it. With v0.1.93, `[repo] forge_gate_unseated = true` (bc029d6): the fork is public, so every
+  `bin/move-to-tag.py` (2026-10-25), then to v0.1.92 and v0.1.93 the same day, to v0.1.95 on
+  2026-10-26 and to v0.1.96 on 2026-10-27; the watchdog runs it. With v0.1.93, `[repo] forge_gate_unseated = true` (bc029d6): the fork is public, so every
   session's forge writes stay checked.
 
 ## Carried from the old host's memory (it does not travel)
