@@ -136,7 +136,7 @@ pi archfit @perf-sweep profile the scan stage
 ```
 
 CCGram resolves the project under `CCGRAM_PROJECTS_ROOTS` (default
-`~/Workspace`), starts the agent in YOLO mode, names the topic after the line,
+`~/Workspace`), starts the agent in normal mode (`claude:yolo …` for YOLO), names the topic after the line,
 and forwards the instruction. No pickers. See
 [Starting a Session](docs/guides.md#starting-a-session-one-typed-line) for the
 grammar, the defaults that replaced each former step, and `/bind` for adopting

@@ -229,7 +229,7 @@ class TestHandleProviderSelect:
         mock_launch.assert_awaited_once()
         request = mock_launch.call_args[0][2]
         assert request.provider_name == "codex"
-        assert request.mode == "yolo"
+        assert request.mode == "normal"
 
     @patch("ccgram.handlers.topics.provider_mode_callbacks.provider_registry")
     async def test_rejects_unknown_provider(self, mock_registry: MagicMock) -> None:

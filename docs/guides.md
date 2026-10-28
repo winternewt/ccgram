@@ -568,7 +568,7 @@ this topic, renames the topic to the plan label, and forwards the instruction.
 | Slot | Rules |
 | --- | --- |
 | agent | `claude`/`c`/`cc`, `codex`/`cx`, `pi`, `antigravity`/`agy`/`ag`, `shell`/`sh`/`bash`. Omitted → `CCGRAM_PROVIDER`. |
-| `:mode` | `yolo` (default), `safe`/`normal`/`std`. Omitted → `CCGRAM_DEFAULT_MODE`. |
+| `:mode` | `yolo`, `safe`/`normal`/`std`. Omitted → `CCGRAM_DEFAULT_MODE` (default `normal`). |
 | project | A name under `CCGRAM_PROJECTS_ROOTS` (default `~/Workspace`), or any absolute/`~` path. Matched by exact name, then unique prefix, then unique substring. |
 | `@branch` | Optional. Creates a git worktree on that new branch and roots the session there. |
 | instruction | Everything after the consumed words, verbatim, including newlines. |
@@ -583,14 +583,14 @@ Notes:
 
 | Behaviour | Default | Environment variable |
 | --- | --- | --- |
-| Launch mode | `yolo` | `CCGRAM_DEFAULT_MODE=normal` |
+| Launch mode | `normal` | `CCGRAM_DEFAULT_MODE=yolo` |
 | Agent without an agent word | `CCGRAM_PROVIDER` | `CCGRAM_PROVIDER` |
 | Project search roots | `~/Workspace` when it exists, else `~`; configured roots that do not exist are dropped | `CCGRAM_PROJECTS_ROOTS` (`os.pathsep`-separated) |
 | Worktree in the browser flow | off | `CCGRAM_NEW_TOPIC_WORKTREES=true` |
 | Workspace picker (herdr/agterm) | off — resolved from the folder | `CCGRAM_WORKSPACE_PICKER=true` |
 | Bind-existing window picker on a new topic | off — use `/bind` | `CCGRAM_BIND_PICKER=true` |
 | Provider list | antigravity, claude, codex, pi, shell | `CCGRAM_PROVIDERS_ENABLED` |
-| First-run trust screens | answered automatically | `CCGRAM_AUTOSTART_TRUST=false`, `CCGRAM_<AGENT>_AUTOSTART=off` |
+| First-run trust screens | left to you | `CCGRAM_AUTOSTART_TRUST=true`, then `CCGRAM_<AGENT>_AUTOSTART=off` per agent |
 | Directory browser listing | git checkouts at the roots | `CCGRAM_DIR_BROWSER_ALL_DIRS=true` |
 
 The typed flow never opens a provider picker: an omitted agent word uses
@@ -637,7 +637,7 @@ exact fingerprint and sends the documented keys once. If readiness fails and
 no fingerprint matches, the launch reports the blocked session instead of
 guessing.
 
-Turn the whole layer off with `CCGRAM_AUTOSTART_TRUST=false` — that switch is final, and a
+The whole layer is off unless `CCGRAM_AUTOSTART_TRUST=true`. Off, that switch is final, and a
 per-agent `on` cannot override it. Disable one agent with `CCGRAM_<AGENT>_AUTOSTART=off` (for example
 `CCGRAM_CODEX_AUTOSTART=off`). Seeding is skipped automatically when a
 provider has a launch-command override, because an override such as
@@ -880,7 +880,7 @@ All state files live in `$CCGRAM_DIR` (`~/.ccgram/` by default):
 | `events.jsonl`       | Append-only hook event log (read incrementally by monitor)        |
 | `monitor_state.json` | Delivered transcript watermarks and pending Jump-to-live barriers |
 
-Session transcripts are read from provider-specific locations (read-only): `~/.claude/projects/` (Claude), `~/.codex/sessions/` (Codex), `~/.gemini/tmp/` (Gemini), `~/.pi/agent/sessions/` (Pi). Shell has no transcript — output is captured directly from the tmux pane. The bot never rewrites a raw transcript: the delivered watermark records relay progress, not a mutation of the transcript. The one agent-config write is the optional first-run trust seeding described in [First-run approval screens](#first-run-approval-screens) — a project entry in `~/.claude.json` or `$CODEX_HOME/config.toml`; disable it with `CCGRAM_AUTOSTART_TRUST=false`.
+Session transcripts are read from provider-specific locations (read-only): `~/.claude/projects/` (Claude), `~/.codex/sessions/` (Codex), `~/.gemini/tmp/` (Gemini), `~/.pi/agent/sessions/` (Pi). Shell has no transcript — output is captured directly from the tmux pane. The bot never rewrites a raw transcript: the delivered watermark records relay progress, not a mutation of the transcript. The one agent-config write is the opt-in first-run trust seeding described in [First-run approval screens](#first-run-approval-screens) — a project entry in `~/.claude.json` or `$CODEX_HOME/config.toml`; it runs only with `CCGRAM_AUTOSTART_TRUST=true`.
 
 ## Running as a Service
 

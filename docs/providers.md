@@ -51,9 +51,9 @@ Gemini is opt-in via `CCGRAM_PROVIDERS_ENABLED=claude,codex,gemini,pi,shell,anti
 
 ## Session Mode (Standard vs YOLO)
 
-Sessions launch in YOLO mode by default (`CCGRAM_DEFAULT_MODE=yolo`); there is
-no mode picker in the normal flow. Override per launch with the `:safe` suffix
-(`claude:safe ccgram …`), or globally with `CCGRAM_DEFAULT_MODE=normal`.
+Sessions launch in normal mode by default (`CCGRAM_DEFAULT_MODE=normal`); there is
+no mode picker in the normal flow. Override per launch with the `:yolo` suffix
+(`claude:yolo ccgram …`), or globally with `CCGRAM_DEFAULT_MODE=yolo`.
 CCGram stores mode per window and reuses it for recover/continue/resume flows.
 
 - `normal` mode launches the provider command as-is.
@@ -68,7 +68,7 @@ YOLO sessions are indicated in Telegram topic titles with a `🚀` badge and in 
 ## First-Run Approval Screens
 
 A fresh agent can block before its prompt. CCGram clears both known cases
-during launch when `CCGRAM_AUTOSTART_TRUST` is on (the default):
+during launch when `CCGRAM_AUTOSTART_TRUST` is on (off by default):
 
 | Provider | Screen | How CCGram clears it |
 | --- | --- | --- |
@@ -77,8 +77,8 @@ during launch when `CCGRAM_AUTOSTART_TRUST` is on (the default):
 | Pi, Antigravity, Shell | none known | No recipe declared: a blocked screen is reported, never guessed at. |
 
 Seeding is preferred: it removes the screen rather than answering it, so it
-costs no keystrokes and no timing window. Turn the layer off globally with
-`CCGRAM_AUTOSTART_TRUST=false`, or per agent with
+costs no keystrokes and no timing window. Turn the layer on globally with
+`CCGRAM_AUTOSTART_TRUST=true`; then turn it off per agent with
 `CCGRAM_<NAME>_AUTOSTART=off`.
 
 ## Custom Launch Commands

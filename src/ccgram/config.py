@@ -265,17 +265,19 @@ class Config:
         # Typed new-topic flow:
         #   <agent>[:<mode>] <project|path> [@branch] <instruction>
         # Each knob replaces a picker step. Defaults are the fewest-steps
-        # path: YOLO start, current branch, auto-resolved workspace, no
-        # bind-existing picker, first-run trust prompts answered for you.
+        # path (current branch, auto-resolved workspace, no bind-existing
+        # picker), except where it would skip an agent's own safety: the
+        # fork starts in normal mode and leaves the agents' trust records
+        # and first-run prompts to the person (both opt-in below).
         self.default_mode: str = _choice_env(
-            "CCGRAM_DEFAULT_MODE", ("yolo", "normal"), "yolo"
+            "CCGRAM_DEFAULT_MODE", ("yolo", "normal"), "normal"
         )
         self.projects_roots: list[Path] = _projects_roots_env()
         # Opt-in worktrees: a typed @branch still works when this is off.
         self.new_topic_worktrees: bool = _flag_env("CCGRAM_NEW_TOPIC_WORKTREES", False)
         self.workspace_picker: bool = _flag_env("CCGRAM_WORKSPACE_PICKER", False)
         self.bind_picker: bool = _flag_env("CCGRAM_BIND_PICKER", False)
-        self.autostart_trust: bool = _flag_env("CCGRAM_AUTOSTART_TRUST", True)
+        self.autostart_trust: bool = _flag_env("CCGRAM_AUTOSTART_TRUST", False)
         # Directory browser listing: git repositories + MRU only.
         self.dir_browser_all_dirs: bool = _flag_env(
             "CCGRAM_DIR_BROWSER_ALL_DIRS", False
