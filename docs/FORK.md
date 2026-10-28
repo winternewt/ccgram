@@ -12,17 +12,18 @@ release taken, and the patch table, which counts the fork's own commits on top o
 | v4.18.2 | merge `0717583` | its delta from v4.18.1 (21 files), by an Opus reader, checked by the seat | the new archfit action commit and engine image (the guard keeps them from running here) | clean, no new flag: archfit pins and module map moved; a manual agterm smoke script nothing runs; `upgrade.py` restart through a callback (folded with 7c3bf9a); stricter Claude record filters (folded with 91adafb and 06908db) |
 | v4.18.3 | merge `0717583` | its delta from v4.18.2 (8 files), by the seat | nothing | clean: logging of multiplexer outages throttled |
 | v4.18.4 | merge `0717583` | its delta from v4.18.3 (19 files), tests included, by the seat | nothing | clean: the event-stream monitor's Telegram imports moved behind a callback; no new host, process, file write or dependency |
+| v4.19.0, v4.20.0 | merge `b8f2437`, 2026-10-28 | the delta `v4.18.4..v4.20.0` as one (65 files), by an Opus reader, its findings checked by the seat: every hunk, both `conftest.py`, the archfit workflow, the Pi menu fixtures skimmed | the new archfit action commit and engine image (the guard keeps them from running here) | clean, nothing hidden, no new dependency, host or process. Red flag on defaults: YOLO became the launch default with the mode picker removed, and `CCGRAM_AUTOSTART_TRUST` came on by default (each launch writes its folder's trust into `~/.claude.json` and Codex's `config.toml`, and the bot answers a remaining trust screen, Codex's "trust all" for project hooks included). The person chose to keep the old safety (2026-10-28): row 232fe26. Noted, not flagged: a typed `@branch` skips `validate_branch_name` (git refuses the harmful forms); Pi's visible menus and input boxes are mirrored to Telegram. Conflicts in `text_handler.py` and `transcript_reader.py` resolved in the merge, with the tracking lookups folded to stay under the statement limit |
 
 ## Patch table
 
-**Count: 20 open upstream-bound (all unfiled), 6 open local, 0 retired.** Rows: the fork's commits
+**Count: 20 open upstream-bound (all unfiled), 7 open local, 0 retired.** Rows: the fork's commits
 past v4.16.0 touching `src/` or `tests/`, merges excluded, oldest first. Records and plans get no
 row. A fate of "upstream-bound" means the change is not specific to this fork and could be filed;
 none is filed until the person asks (the priming, "Fixes for the upstream"). Fates were first set by
 the seat on 2026-10-17 from the commit messages; the person may move any.
 
 Check against git: `git log --no-merges --oneline <last release merged>..main -- src tests` (now
-`v4.18.4`) lists exactly the open rows, less each reverted pair and each closed row.
+`v4.20.0`) lists exactly the open rows, less each reverted pair and each closed row.
 
 | Commit | Why it exists | Upstream issue / PR | Fate | Retired by |
 |---|---|---|---|---|
@@ -52,3 +53,4 @@ Check against git: `git log --no-merges --oneline <last release merged>..main --
 | 92675e6 | the parsed messages of a session left unchanged for five minutes were dropped, so its next line cost a whole re-parse (fixes 3154319) | none (with the issue for 3154319) | upstream-bound | |
 | 10f5605 | people who posted before `discover_telegram_ids.py` ran could not be found; it now reads forwarded messages | none | upstream-bound | |
 | c7341a4 | after the last topic was deleted, new windows found no group, got no topic and their replies were dropped; the group is now kept, `/sync` records it, and the empty case warns (desk #138) | none (draft waits on the person) | upstream-bound | |
+| 232fe26 | upstream v4.19.0 starts sessions in YOLO mode with no picker and writes the agents' folder trust by default: the fork defaults to normal mode and leaves trust off (the person, 2026-10-28) | none (a choice of defaults, not a defect) | local | |

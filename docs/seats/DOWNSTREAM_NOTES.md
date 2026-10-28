@@ -7,6 +7,15 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 ## Upstream
 
+- **Now (2026-10-28): `main` is on `v4.20.0`** (merge `b8f2437`, with v4.19.0) plus the fork's own
+  commits. The delta `v4.18.4..v4.20.0` (65 files) was read in full by an Opus reader; the seat
+  checked its findings: nothing hidden, no new dependency. v4.19.0 made YOLO the default launch mode
+  (mode picker gone) and turned `CCGRAM_AUTOSTART_TRUST` on by default (folder trust written into
+  `~/.claude.json` and Codex's `config.toml`, trust screens answered by the bot). The person, asked
+  in chat: "Keep old safety"; `232fe26` sets both defaults back. Suite 8915 passed. One tmux
+  integration test (`test_missing_target_returns_empty_result[list_panes-...]`) errored once in the
+  parallel run and passed alone: it touches the live tmux server. The entries below are the
+  history of the v4.18.4 merge.
 - Last release taken: `v4.16.0`, by replay. `main` is still on it (plus the fork's own commits, the
   last `5b01e00`).
 - **Waiting: v4.17.0, v4.18.0, v4.18.1, v4.18.2, v4.18.3, v4.18.4**, read as one delta from `v4.16.0` (277 files, about 13.6k
@@ -159,8 +168,8 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 ## Patch table
 
-- In `docs/FORK.md`: 26 rows, 20 open upstream-bound (all unfiled), 6 open local, 0 retired;
-  checked against git 2026-10-27 (`git log --no-merges v4.18.4..main -- src tests`: 26).
+- In `docs/FORK.md`: 27 rows, 20 open upstream-bound (all unfiled), 7 open local, 0 retired;
+  checked against git 2026-10-28 (`git log --no-merges v4.20.0..main -- src tests`: 27).
 
 ## The bot's logs
 
