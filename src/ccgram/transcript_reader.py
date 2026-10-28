@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 import aiofiles
 import structlog
 
+from .config import config
 from .monitor_events import NewMessage, SessionInfo
 from .expandable_quote import format_expandable_quote
 from .window_state_ports import identity_state
@@ -367,6 +368,17 @@ class TranscriptReader:
         self._file_generations = self._snapshot_file_generations()
         self._file_markers = self._snapshot_file_markers()
         self._startup_file_boundaries = self._snapshot_startup_boundaries()
+        # Sessions whose startup replay was already bounded in this process.
+        self._startup_replay_checked: set[str] = set()
+        # Sessions that existed before this process started. A session first
+        # seen now is a fresh launch, not a backlog from before the restart.
+        self._startup_sessions: set[str] = set(self._state.tracked_sessions)
+        # Deliberate replay-from-start requests, which must never be clamped.
+        self._replay_allowed: set[str] = set()
+        # Sessions this process clamped, with the offset it clamped to. A
+        # later rollback must not undo the clamp, and must not skip output
+        # written after it either.
+        self._startup_clamped: dict[str, int] = {}
         self._fresh_sessions: set[str] = set()
 
     def note_fresh_session(self, session_id: str) -> None:
@@ -581,6 +593,10 @@ class TranscriptReader:
                 # watermark follow via commit_parsed_offsets().
                 tracked.parsed_offset = st.st_size
                 self._startup_file_boundaries.pop(session_id, None)
+                # A replaced transcript has no pre-restart backlog left: a clamp
+                # that survived would bound parser rebuild past the new file and
+                # swallow live answers.
+                self._startup_clamped.pop(session_id, None)
         return _GenerationCheck(changed and not consumed_intact, consumed_intact)
 
     async def _read_session_entries(
@@ -628,6 +644,7 @@ class TranscriptReader:
                 return _StableRead(entries, after, reset_generation)
             tracked.parsed_offset = after.st_size
             self._startup_file_boundaries.pop(session_id, None)
+            self._startup_clamped.pop(session_id, None)
             reset_generation = True
         return None
 
@@ -706,7 +723,12 @@ class TranscriptReader:
         prefix = [
             entry
             for entry in read_entries(raw, provider_name)
-            if entry.offset < tracked.last_byte_offset
+            # Rebuild to the position the reader will resume from, which is the
+            # clamp point when a startup clamp applied. Rebuilding only to the
+            # delivered watermark would miss the skipped turn and replay stale
+            # parser context (a Codex task_complete "Done" that the skipped
+            # user turn had cleared), discarding the next real answer.
+            if entry.offset < self._clamped_floor(session_id, tracked.last_byte_offset)
         ]
         _, parser_state = parse_records(
             prefix,
@@ -757,12 +779,24 @@ class TranscriptReader:
         self._protocol_parser_states.pop(session_id, None)
         self._parser_rebuild_pending.discard(session_id)
 
+    def _clamped_floor(self, session_id: str, watermark: int) -> int:
+        """Lower bound for a resumed parse position: the clamp, when applied."""
+        return max(self._startup_clamped.get(session_id, watermark), watermark)
+
     def replay_from_watermark(self, session_id: str) -> None:
-        """Discard uncommitted parse context and resume from durable progress."""
+        """Discard uncommitted parse context and resume from durable progress.
+
+        A canceled or expired backlog skip restores the delivered watermark.
+        For a clamped session that watermark still precedes the range this
+        process decided to skip, so resuming from it alone would replay the
+        backlog the clamp exists to prevent.
+        """
         tracked = self._state.get_session(session_id)
         if tracked is None:
             return
-        tracked.parsed_offset = tracked.last_byte_offset
+        tracked.parsed_offset = self._clamped_floor(
+            session_id, tracked.last_byte_offset
+        )
         self.reset_parser_state(session_id)
         self._parser_rebuild_pending.add(session_id)
         self._file_mtimes.pop(session_id, None)
@@ -821,6 +855,23 @@ class TranscriptReader:
                 self._startup_file_boundaries[session_id] = (
                     self._startup_file_boundaries.pop(old_session_id)
                 )
+            # A refresh can arrive before the old id was ever polled, so the
+            # clamp has not run yet: carry the membership instead of the clamp,
+            # and clear the checked flag so the bound is applied to this id.
+            if old_session_id in self._startup_sessions:
+                self._startup_sessions.add(session_id)
+                self._startup_replay_checked.discard(session_id)
+            # The clamp is keyed by session id, so a refreshed id would read as
+            # a brand-new session and replay the backlog the old id clamped.
+            if old_session_id in self._startup_clamped:
+                clamped = self._startup_clamped.pop(old_session_id)
+                self._startup_clamped[session_id] = clamped
+                self._startup_sessions.add(session_id)
+                self._startup_replay_checked.add(session_id)
+                # The replacement cursor starts at -1, which falls back to the
+                # delivered watermark and would replay the clamped range. Point
+                # it at the clamp instead: the clamp state moved with the id.
+                tracked.parsed_offset = max(clamped, tracked.last_byte_offset)
             self._parser_rebuild_pending.add(session_id)
             log_throttle_reset(f"partial-jsonl:{old_session_id}")
             logger.debug(
@@ -831,6 +882,60 @@ class TranscriptReader:
             )
             return tracked
         return None
+
+    def allow_replay(self, session_id: str) -> None:
+        """Exempt *session_id* from the startup replay bound.
+
+        Called when a session map explicitly asks for a replay from the start:
+        that request is authoritative, so the clamp must not silently skip it.
+        """
+        self._replay_allowed.add(session_id)
+
+    def _clamp_startup_replay(
+        self, session_id: str, tracked: TrackedSession, file_size: int
+    ) -> None:
+        """Bound what one restart may replay from an undelivered transcript.
+
+        The delivered watermark only advances when the queue fully drains, so
+        a wedged or flood-limited queue leaves it far behind. Replaying that
+        whole range on the next start re-sends thousands of messages, which
+        trips Telegram flood control and freezes delivery again — a loop.
+        Once per process per session, a range larger than
+        CCGRAM_STARTUP_REPLAY_MAX_KB is treated as history: the parse position
+        jumps to EOF, exactly like a replaced transcript. The bytes stay in
+        the transcript file; only their Telegram delivery is skipped.
+        """
+        if session_id in self._startup_replay_checked:
+            return
+        self._startup_replay_checked.add(session_id)
+        if (
+            session_id not in self._startup_sessions
+            or session_id in self._replay_allowed
+        ):
+            # Freshly created in this process, or an explicit replay request:
+            # there is no pre-restart backlog to bound.
+            return
+        limit = config.startup_replay_max_bytes
+        if limit <= 0:
+            return
+        pending = file_size - self._parse_pos(tracked)
+        if pending <= limit:
+            return
+        tracked.parsed_offset = file_size
+        self._startup_clamped[session_id] = file_size
+        self._startup_file_boundaries.pop(session_id, None)
+        # Rebuild the parser context from the clamped prefix. Without this a
+        # provider whose delivery mirrors state (Codex task_complete) can emit
+        # a skipped final answer again, because the rebuild guard only fires
+        # for a nonzero watermark.
+        self._parser_rebuild_pending.add(session_id)
+        logger.warning(
+            "Startup replay bounded: skipped %.1f KiB of undelivered transcript "
+            "for session %s (limit %d KiB, CCGRAM_STARTUP_REPLAY_MAX_KB)",
+            pending / 1024,
+            session_id,
+            limit // 1024,
+        )
 
     @staticmethod
     def _parse_pos(session: TrackedSession) -> int:
@@ -952,10 +1057,9 @@ class TranscriptReader:
             return
 
         if tracked is None:
-            tracked = self._adopt_tracking_for_file(session_id, file_path)
-
-        if tracked is None:
-            tracked = await self._start_tracking_session(
+            tracked = self._adopt_tracking_for_file(
+                session_id, file_path
+            ) or await self._start_tracking_session(
                 session_id, file_path, provider, window_id, provider_name
             )
             if tracked is None:
@@ -967,6 +1071,7 @@ class TranscriptReader:
         except OSError:
             return
 
+        self._clamp_startup_replay(session_id, tracked, current_size)
         probe_offset = tracked.parsed_offset
         probe_boundary = self._startup_file_boundaries.get(session_id)
         generation_changed, consumed_intact = await self._prepare_observed_generation(
@@ -983,7 +1088,7 @@ class TranscriptReader:
             return
         if (
             not generation_changed
-            and tracked.last_byte_offset > 0
+            and (tracked.last_byte_offset > 0 or session_id in self._startup_clamped)
             and session_id not in self._protocol_parser_states
         ):
             # Parser-only context is volatile. Recreate it from the durable
@@ -1057,7 +1162,16 @@ class TranscriptReader:
                 supports_incremental_read=provider.capabilities.supports_incremental_read,
             )
             if not rebuilt:
-                tracked.parsed_offset = tracked.last_byte_offset
+                # Rolling back to the delivered watermark is right for a live
+                # session, but a clamped one would then replay the backlog this
+                # process decided to skip. Roll back to the clamp point, not to
+                # EOF: records written after it are live output and must be
+                # read on the next poll.
+                tracked.parsed_offset = (
+                    max(self._startup_clamped[session_id], tracked.last_byte_offset)
+                    if session_id in self._startup_clamped
+                    else tracked.last_byte_offset
+                )
                 self._file_mtimes.pop(session_id, None)
                 new_entries = []
             elif not self._admit_read(

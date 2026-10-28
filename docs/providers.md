@@ -25,10 +25,25 @@ Delivery is at-least-once. CCGram persists a transcript's delivered watermark on
 
 ## Choosing a Provider
 
-**From Telegram**: When you create a new topic and select a directory, then — if the directory is an eligible git repo — choose whether to use the current branch or create a new worktree on a new branch (non-git directories skip this step), a provider picker appears with Claude (default), Codex, Gemini, Pi, Antigravity, and Shell options. After provider selection, CCGram asks for session mode:
+**From Telegram**: Type the session line in a fresh topic:
 
-- `✅ Standard` (normal approvals)
-- `🚀 YOLO` (provider-specific permissive mode)
+```text
+<agent>[:<mode>] <project|path> [@branch] <instruction...>
+```
+
+`codex ccgram fix the hook timeout` starts Codex on the `ccgram` checkout with
+that instruction, in one message. Omit the agent word to use
+`CCGRAM_PROVIDER`. See
+[Starting a Session](guides.md#starting-a-session-one-typed-line) for the
+grammar, project resolution, and every default.
+
+The typed line never opens a provider picker: an omitted agent word uses
+`CCGRAM_PROVIDER`, and a provider that is disabled or whose CLI is not
+installed fails the launch with a one-line reason. A provider that supports no
+permissive flag (Shell, Pi) always launches in normal mode, whatever
+`CCGRAM_DEFAULT_MODE` says. The default provider list — also used by the
+directory browser's picker — is Antigravity, Claude, Codex, Pi, and Shell;
+Gemini is opt-in via `CCGRAM_PROVIDERS_ENABLED=claude,codex,gemini,pi,shell,antigravity`.
 
 **From the terminal**: If you create a window manually and start an agent CLI, CCGram auto-detects the provider from the running process name. When the pane command is a JS runtime wrapper (node, bun), it inspects the pane's foreground process to reliably identify the actual CLI. Evidence is limited to the executable name and, for wrapper commands, the script path: helper data paths, inline `-e` code, and flag values never name a provider, so a helper that mentions another CLI's directory cannot override the running one. How the foreground process is read is owned by the multiplexer backend — tmux uses `ps -t <tty>`, herdr reads `pane process-info` (no tty needed), and agterm reports foreground argv (no tty or process-group ID) — so detection works through the same seam on all three. The shell provider uses the same seam to classify a bare shell pane. Agterm reports `foregroundShell` (and `splitForegroundShell` for a split peer) for a known shell, so the Terminal provider is available there. This does not prove the shell is at a prompt: a builtin such as `read` is invisible in argv, so agterm disables shell prompt-marker setup rather than risk sending setup commands while foreground state is unknown. As a last resort, Gemini pane-title symbols (`✦`, `✋`, `◇`) are checked.
 
@@ -36,6 +51,9 @@ Delivery is at-least-once. CCGram persists a transcript's delivered watermark on
 
 ## Session Mode (Standard vs YOLO)
 
+Sessions launch in YOLO mode by default (`CCGRAM_DEFAULT_MODE=yolo`); there is
+no mode picker in the normal flow. Override per launch with the `:safe` suffix
+(`claude:safe ccgram …`), or globally with `CCGRAM_DEFAULT_MODE=normal`.
 CCGram stores mode per window and reuses it for recover/continue/resume flows.
 
 - `normal` mode launches the provider command as-is.
@@ -46,6 +64,22 @@ CCGram stores mode per window and reuses it for recover/continue/resume flows.
   - Antigravity: `--dangerously-skip-permissions`
 
 YOLO sessions are indicated in Telegram topic titles with a `🚀` badge and in `/sessions` with a `[YOLO]` tag. When Remote Control is active, a `📡` badge also appears in the topic title.
+
+## First-Run Approval Screens
+
+A fresh agent can block before its prompt. CCGram clears both known cases
+during launch when `CCGRAM_AUTOSTART_TRUST` is on (the default):
+
+| Provider | Screen | How CCGram clears it |
+| --- | --- | --- |
+| Claude | "Do you trust the files in this folder?" | Seeds `hasTrustDialogAccepted` for the project in the profile the launch reads — `$CLAUDE_CONFIG_DIR/.claude.json` when that is set, otherwise `~/.claude.json`; falls back to one `Enter` on the exact dialog text. |
+| Codex | Hooks review: "trust all and continue" | Seeds `[projects."<path>"]` with `trust_level = "trusted"` in `$CODEX_HOME/config.toml`; falls back to `Down`+`Enter` on the exact hooks prompt. |
+| Pi, Antigravity, Shell | none known | No recipe declared: a blocked screen is reported, never guessed at. |
+
+Seeding is preferred: it removes the screen rather than answering it, so it
+costs no keystrokes and no timing window. Turn the layer off globally with
+`CCGRAM_AUTOSTART_TRUST=false`, or per agent with
+`CCGRAM_<NAME>_AUTOSTART=off`.
 
 ## Custom Launch Commands
 
@@ -201,7 +235,7 @@ Pi transcripts are JSONL files (v3 format) under `~/.pi/agent/sessions/--<encode
 
 ### Commands
 
-Pi exposes a Telegram-safe command list based on the [Pi usage docs](https://pi.dev/docs/latest/usage): `/changelog`, `/clone`, `/compact`, `/copy`, `/export`, `/fork`, `/hotkeys`, `/login`, `/logout`, `/model`, `/name`, `/new`, `/quit`, `/reload`, `/scoped_models` (native `/scoped-models`), `/session`, `/settings`, `/share`, and `/tree`. `/followup <message>` is ccgram's Pi-only bridge to Pi's Alt+Enter behavior: it queues the message after current work finishes instead of steering the active turn. `/clear` is accepted as a hidden compatibility alias for Pi `/new`, but it is not advertised because Pi does not define `/clear`. Pi `/resume` is not advertised because it collides with ccgram's bot-native session picker. Dynamic discovery surfaces three more sources:
+Pi exposes a Telegram-safe command list based on the [Pi usage docs](https://pi.dev/docs/latest/usage): `/changelog`, `/clone`, `/compact`, `/copy`, `/export`, `/fork`, `/hotkeys`, `/login`, `/logout`, `/model`, `/name`, `/new`, `/quit`, `/reload`, `/scoped_models` (native `/scoped-models`), `/session`, `/settings`, `/share`, `/thinking`, and `/tree`. `/followup <message>` is ccgram's Pi-only bridge to Pi's Alt+Enter behavior: it queues the message after current work finishes instead of steering the active turn. `/clear` is accepted as a hidden compatibility alias for Pi `/new`, but it is not advertised because Pi does not define `/clear`. Pi `/resume` is not advertised because it collides with ccgram's bot-native session picker. Dynamic discovery surfaces three more sources:
 
 - **Skills** — `SKILL.md` under `~/.pi/agent/skills/<name>/`, `~/.agents/skills/<name>/`, `<project>/.pi/skills/<name>/`, or `<project>/.agents/skills/<name>/`. Loose `.md` files at the root of `~/.pi/agent/skills/` or `<project>/.pi/skills/` are also picked up.
 - **Prompt templates** — `.md` files under `~/.pi/agent/prompts/` or `<project>/.pi/prompts/` (per-project walk stops at the first `.git` ancestor).
@@ -213,9 +247,50 @@ Names collide-dedupe with first-source wins (skills > prompts > extensions).
 
 With hook-runner installed, Pi `Stop` hooks mark the topic ready immediately. Without hooks, status is inferred from transcript activity — idle when the latest assistant message has no pending tool calls, working when there are unreturned tool uses.
 
+### Interactive commands
+
+CCGram mirrors Pi's live terminal menu into one editable Telegram message.
+This covers `/model`, `/thinking`, `/settings` and its submenus,
+`/scoped_models`, `/fork`, `/tree`,
+authentication selectors, and extension commands that use Pi's standard
+selector, settings, input, or editor components. Detection follows the displayed UI, not a
+command-name allowlist; an extension's `/modes` menu works the same way.
+
+| Task | Telegram control |
+| --- | --- |
+| Navigate a long list | ↑ / ↓; ↑5 / ↓5 sends five arrows |
+| Select or change a value | Enter; Space where Pi supports it |
+| Search or type | **Reply to the menu message** with one line; no Enter is sent |
+| Clear or correct search | Clear search / ⌫ |
+| Add a line in an extension editor | New line, then reply with the next line |
+| Change model scope | Enter toggles; All matching / None matching / Provider |
+| Reorder scoped models | Move ↑ / Move ↓ |
+| Persist a model/thinking default or scope | Save default / Save scope (Pi's Ctrl+S) |
+| Go back or close | Esc; a parent settings menu stays visible |
+| Capture again | 🔄 |
+
+Replies append to the current input; clear search before replacing it.
+Slash-prefixed replies, including bot command names, are literal menu input too.
+Ordinary messages still dismiss a blocking prompt before reaching the agent.
+Replies to an expired menu are rejected, not forwarded as agent messages.
+Buttons and replies target the owning pane and revalidate the captured prompt
+before sending input. If Telegram cannot update the display, tap 🔄 to recapture
+it; old action buttons stay rejected. Restarting the bot expires existing menu controls.
+
+Only visible terminal rows are mirrored; navigation scrolls Pi itself. Pi's
+SelectList and SettingsList do not use PageUp/PageDown, so the five-arrow
+buttons work across both. Selection and persistence follow Pi's semantics:
+changing settings can take effect immediately; Esc is not an undo operation.
+
+Use default Pi keybindings for these controls. Nonstandard custom extension
+screens or rebound keys may require `/screenshot` plus `/toolbar`, or the
+terminal itself. Do not send API keys, passwords, or OAuth codes through
+Telegram; finish authentication in the terminal.
+
 ### Toolbar
 
-Pi's default toolbar omits Mode/Think/YOLO (pi has no mode cycling) and adds a dedicated nav row for driving Pi's `/model` and `/session` pickers:
+Pi's default toolbar omits Mode/Think/YOLO and adds a dedicated navigation row.
+The automatic menu above is the primary control; the toolbar remains a fallback:
 
 - Row 1: `📷 Screen, ⏹ Ctrl-C, 📺 Live`
 - Row 2: `⎋ Esc, ⇥ Tab, π Model`

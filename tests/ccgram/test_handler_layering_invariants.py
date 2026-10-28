@@ -120,11 +120,18 @@ _SINGLETON_ALLOWLIST = frozenset(
         "sync_command.py",
         "text/text_handler.py",
         "toolbar/toolbar_callbacks.py",
+        # /bind reuses the window picker: it resolves the bound window for the
+        # topic and lists unbound windows, exactly the routing the picker
+        # callbacks do.
+        "topics/bind_command.py",
         "topics/directory_browser.py",
         "topics/directory_callbacks.py",
         # /start in a fresh topic records its chat and reads its binding, as
         # text_handler does for the first message (fork, 5fe9a34).
         "topics/new_command.py",
+        # typed_topic reads the user's MRU projects and owns the launch, the
+        # same direct-singleton pattern as window_launch_service.
+        "topics/typed_topic.py",
         # provider_mode_callbacks uses thread_router for the double-click guard
         # (same routing pattern as directory_callbacks).
         "topics/provider_mode_callbacks.py",

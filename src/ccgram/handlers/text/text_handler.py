@@ -24,6 +24,7 @@ from ...config import config
 from ...telegram_client import PTBTelegramClient, TelegramClient
 from ..callback_helpers import get_thread_id as _get_thread_id
 from ..commands import sync_scoped_menu_for_text_context
+from ..topics.typed_topic import start_from_text
 from ..topics.directory_browser import (
     BROWSE_DIRS_KEY,
     BROWSE_PAGE_KEY,
@@ -273,20 +274,42 @@ async def _handle_worktree_name_reply(
     return True
 
 
+def _browser_start_path() -> str:
+    """Directory-browser root: the first configured projects root."""
+    roots = config.projects_roots
+    return str(roots[0] if roots else Path.cwd())
+
+
 async def _handle_unbound_topic(
     user_id: int,
     thread_id: int,
     text: str,
     user_data: dict | None,
     message: Message,
+    context: ContextTypes.DEFAULT_TYPE | None = None,
 ) -> bool:
-    """Show window picker or directory browser for an unbound topic.
+    """Start a session for an unbound topic, or ask for the one missing word.
 
     Returns True if the topic is unbound (handled), False if already bound.
     """
     window_id = thread_router.get_window_for_thread(user_id, thread_id, message.chat.id)
     if window_id is not None:
         return False
+
+    # Typed plan first: "<agent> <project> [@branch] <instruction>" starts the
+    # session from this one message. No picker, no follow-up taps.
+    if (
+        context is not None
+        and text.strip()
+        and await start_from_text(
+            user_id=user_id,
+            thread_id=thread_id,
+            text=text,
+            message=message,
+            context=context,
+        )
+    ):
+        return True
 
     await start_session_flow(
         user_id, thread_id, text, user_data, functools.partial(safe_reply, message)
@@ -308,7 +331,7 @@ async def start_session_flow(
     browser's callbacks are checked against ``PENDING_THREAD_ID``, so the
     topic the prompt is posted in must be ``thread_id``.
     """
-    all_windows = await tmux_manager.list_windows()
+    all_windows = await tmux_manager.list_windows() if config.bind_picker else []
     bound_ids = {bound_wid for _, _, bound_wid in thread_router.iter_thread_bindings()}
     bound_lookup = {canonical_window_id(wid) for wid in bound_ids}
     unbound = [
@@ -341,13 +364,14 @@ async def start_session_flow(
             await send(PENDING_DELIVERY_NOTICE)
         return
 
-    # No unbound windows — show directory browser to create a new session
+    # Nothing parsed — fall back to the directory browser (still one screen
+    # per level, but rooted at the projects root and limited to git checkouts).
     logger.info(
         "Unbound topic: showing directory browser (user=%d, thread=%d)",
         user_id,
         thread_id,
     )
-    start_path = str(Path.cwd())
+    start_path = _browser_start_path()
     msg_text, keyboard, subdirs = build_directory_browser(start_path, user_id=user_id)
     if user_data is not None:
         user_data[STATE_KEY] = STATE_BROWSING_DIRECTORY
@@ -469,7 +493,7 @@ async def _handle_dead_window(
             cleanup_eligible=True,
         )
         lifecycle_strategy.clear_dead_notification(user_id, thread_id)
-        start_path = str(Path.cwd())
+        start_path = _browser_start_path()
         msg_text, keyboard, subdirs = build_directory_browser(
             start_path, user_id=user_id
         )
@@ -696,6 +720,59 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await handle_text_message(update, context)
 
 
+async def _handle_pi_menu_reply(
+    user_id: int,
+    thread_id: int | None,
+    text: str,
+    message: Message,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> bool:
+    # Lazy: menu rendering imports handlers during callback registration.
+    from ..interactive.pi_controls import (
+        PI_MENU_EXPIRED,
+        is_pi_menu_reply,
+    )
+
+    if not is_pi_menu_reply(message):
+        return False
+    # Lazy: callback dispatch shares the renderer; load only for actual menu input.
+    from ..interactive.interactive_callbacks import handle_pi_reply
+
+    # A retired menu reply is never a new session plan, a rename, or shell input.
+    window_id = (
+        thread_router.get_window_for_thread(user_id, thread_id, message.chat.id)
+        if thread_id is not None
+        else None
+    )
+    if thread_id is None or window_id is None:
+        await safe_reply(message, PI_MENU_EXPIRED)
+        return True
+    await handle_pi_reply(
+        PTBTelegramClient(context.bot),
+        user_id,
+        window_id,
+        thread_id,
+        text,
+        message,
+        protocol_adapter_for(context.bot_data),
+    )
+    return True
+
+
+async def _reply_without_topic(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, message: Message
+) -> None:
+    if update.effective_chat and is_general_topic(message):
+        await handle_general_topic_message(
+            context.bot, message, update.effective_chat.id
+        )
+    else:
+        await safe_reply(
+            message,
+            "\u274c Please use a named topic. Create a new topic to start a session.",
+        )
+
+
 async def handle_text_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -710,6 +787,9 @@ async def handle_text_message(
 
     text = message.text
     thread_id = _get_thread_id(update)
+
+    if await _handle_pi_menu_reply(user.id, thread_id, text, message, context):
+        return
 
     # Store group chat_id for forum topic message routing
     chat = message.chat
@@ -731,20 +811,12 @@ async def handle_text_message(
 
     # Must be in a named topic
     if thread_id is None:
-        if message and update.effective_chat and is_general_topic(message):
-            await handle_general_topic_message(
-                context.bot, message, update.effective_chat.id
-            )
-        else:
-            await safe_reply(
-                message,
-                "\u274c Please use a named topic. Create a new topic to start a session.",
-            )
+        await _reply_without_topic(update, context, message)
         return
 
-    # Unbound topic — show picker or browser
+    # Unbound topic — typed plan, picker, or browser
     if await _handle_unbound_topic(
-        user.id, thread_id, text, context.user_data, message
+        user.id, thread_id, text, context.user_data, message, context
     ):
         return
 

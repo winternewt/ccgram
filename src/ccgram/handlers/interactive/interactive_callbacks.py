@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import asyncio
 import structlog
 
-from telegram import CallbackQuery, Update
+from telegram import CallbackQuery, Message, Update
 from ...telegram_client import PTBTelegramClient
 from ...session_protocol.models import ProtocolError
 from ..callback_data import (
@@ -27,9 +27,21 @@ from ..callback_data import (
     CB_ASK_SPACE,
     CB_ASK_TAB,
     CB_ASK_UP,
+    CB_PI_CONTROL,
 )
 from ..callback_registry import register
+from .pi_controls import (
+    PI_MENU_EXPIRED,
+    is_pi_menu_reply,
+    parse_pi_control,
+    pi_control_keys,
+)
+from ..messaging_pipeline.message_sender import ack_reaction, safe_reply
 from .interactive_ui import (
+    PromptStateError,
+    pane_has_interactive_prompt,
+    get_pi_reply_target,
+    get_interactive_window,
     advance_interactive_sequence,
     clear_interactive_msg,
     get_interactive_prompt_fingerprint,
@@ -40,6 +52,9 @@ from .interactive_ui import (
 
 if TYPE_CHECKING:
     from telegram.ext import ContextTypes
+
+    from ...session_protocol.telegram import TelegramSessionAdapter
+    from ...telegram_client import TelegramClient
 
 logger = structlog.get_logger()
 
@@ -68,6 +83,7 @@ INTERACTIVE_PREFIXES: tuple[str, ...] = (
     *INTERACTIVE_KEY_MAP,
     CB_ASK_REFRESH,
     CB_ASK_CHOICE,
+    CB_PI_CONTROL,
 )
 
 
@@ -107,6 +123,10 @@ def match_interactive_prefix(data: str) -> tuple[str, str, str | None] | None:
       - ``"aq:enter:@12|%5"``      → tmux: window @12, pane %5
       - callback target suffixes remain opaque and are resolved by the backend
     """
+    if data.startswith(CB_PI_CONTROL):
+        parsed = parse_pi_control(data)
+        return (CB_PI_CONTROL, parsed[2], parsed[3]) if parsed else None
+
     direct_choice = parse_direct_choice_callback(data)
     if direct_choice is not None:
         _, _, window_id, pane_id = direct_choice
@@ -172,6 +192,52 @@ async def _handle_direct_choice(
     await query.answer()
 
 
+async def _handle_navigation_key(
+    query: CallbackQuery,
+    user_id: int,
+    thread_id: int | None,
+    chat_id: int | None,
+    message_id: int | None,
+    window_id: str,
+    pane_id: str | None,
+    cb_prefix: str,
+    adapter: TelegramSessionAdapter,
+    client: TelegramClient,
+    action_id: str,
+    expected_prompt: str | None,
+) -> None:
+    """Keep the existing provider navigation path separate from Pi controls."""
+    if not is_current_interactive_message(user_id, thread_id, chat_id, message_id):
+        await query.answer("This prompt has expired", show_alert=True)
+        return
+    tmux_key, refresh_ui = INTERACTIVE_KEY_MAP[cb_prefix]
+    sent, message_text = await adapter.send_keys(
+        window_id,
+        [tmux_key],
+        pane_id=pane_id,
+        action_id=action_id,
+        expected_prompt=expected_prompt,
+    )
+    if not sent:
+        await query.answer(
+            message_text or "Unable to send key. Try again.", show_alert=True
+        )
+        return
+    if refresh_ui:
+        await asyncio.sleep(0.5)
+        await handle_interactive_ui(
+            client,
+            user_id,
+            window_id,
+            thread_id,
+            pane_id=pane_id,
+            chat_id=chat_id,
+        )
+    else:
+        await clear_interactive_msg(user_id, client, thread_id, chat_id=chat_id)
+    await query.answer(INTERACTIVE_KEY_LABELS.get(cb_prefix, message_text))
+
+
 async def handle_interactive_callback(
     query: CallbackQuery,
     user_id: int,
@@ -221,6 +287,11 @@ async def handle_interactive_callback(
     )
 
     try:
+        if cb_prefix == CB_PI_CONTROL:
+            await handle_pi_control(
+                query, user_id, thread_id, PTBTelegramClient(context.bot), data, adapter
+            )
+            return
         if cb_prefix == CB_ASK_CHOICE:
             await _handle_direct_choice(
                 query,
@@ -249,41 +320,140 @@ async def handle_interactive_callback(
             )
             await query.answer("\U0001f504")
         else:
-            if not is_current_interactive_message(
-                user_id, thread_id, chat_id, message_id
-            ):
-                await query.answer("This prompt has expired", show_alert=True)
-                return
-            tmux_key, refresh_ui = INTERACTIVE_KEY_MAP[cb_prefix]
-            sent, message_text = await adapter.send_keys(
+            await _handle_navigation_key(
+                query,
+                user_id,
+                thread_id,
+                chat_id,
+                message_id,
                 window_id,
-                [tmux_key],
-                pane_id=pane_id,
-                action_id=action_id,
-                expected_prompt=expected_prompt,
+                pane_id,
+                cb_prefix,
+                adapter,
+                client,
+                action_id,
+                expected_prompt,
             )
-            if not sent:
-                await query.answer(
-                    message_text or "Unable to send key. Try again.", show_alert=True
-                )
-                return
-            if refresh_ui:
-                await asyncio.sleep(0.5)
-                await handle_interactive_ui(
-                    client,
-                    user_id,
-                    window_id,
-                    thread_id,
-                    pane_id=pane_id,
-                    chat_id=chat_id,
-                )
-            else:
-                await clear_interactive_msg(user_id, client, thread_id, chat_id=chat_id)
-            await query.answer(INTERACTIVE_KEY_LABELS.get(cb_prefix, message_text))
     except ProtocolError as exc:
         if exc.code != "session_busy":
             raise
         await query.answer("Session is busy. Try again.", show_alert=True)
+
+
+async def refresh_pi_menu(
+    client: TelegramClient,
+    user_id: int,
+    window_id: str,
+    thread_id: int | None,
+    chat_id: int,
+    pane_id: str | None,
+) -> None:
+    if await handle_interactive_ui(
+        client, user_id, window_id, thread_id, pane_id=pane_id, chat_id=chat_id
+    ):
+        return
+    try:
+        still_open = await pane_has_interactive_prompt(window_id, pane_id)
+    except PromptStateError:
+        return
+    if not still_open:
+        await clear_interactive_msg(user_id, client, thread_id, chat_id=chat_id)
+
+
+async def handle_pi_control(
+    query: CallbackQuery,
+    user_id: int,
+    thread_id: int | None,
+    client: TelegramClient,
+    data: str,
+    adapter: TelegramSessionAdapter,
+) -> None:
+    parsed = parse_pi_control(data)
+    message = query.message
+    if parsed is None or message is None:
+        await query.answer("This prompt has expired", show_alert=True)
+        return
+    action, sequence, window_id, pane_id = parsed
+    chat_id = message.chat.id
+    fingerprint = get_interactive_prompt_fingerprint(
+        user_id, thread_id, chat_id, message.message_id
+    )
+    current = is_current_interactive_prompt(
+        user_id, thread_id, window_id, chat_id, message.message_id, sequence
+    )
+    if action == "refresh":
+        # Input consumes its sequence even if the subsequent Telegram edit fails.
+        # Recapture is safe from that older keyboard; sending another key is not.
+        current = (
+            is_current_interactive_message(
+                user_id, thread_id, chat_id, message.message_id
+            )
+            and get_interactive_window(user_id, thread_id, chat_id=chat_id) == window_id
+        )
+    if fingerprint is None or not current:
+        await query.answer("This prompt has expired", show_alert=True)
+        return
+    if action != "refresh":
+        sent, detail = await adapter.send_keys(
+            window_id,
+            list(pi_control_keys(action)),
+            pane_id=pane_id,
+            action_id=f"telegram-callback:{query.id}",
+            expected_prompt=fingerprint,
+        )
+        if not sent:
+            await query.answer(detail or "Unable to send key", show_alert=True)
+            return
+        advance_interactive_sequence(user_id, thread_id, chat_id=chat_id)
+    await query.answer()
+    if action != "refresh":
+        await asyncio.sleep(0.5)
+    await refresh_pi_menu(client, user_id, window_id, thread_id, chat_id, pane_id)
+
+
+async def handle_pi_reply(
+    client: TelegramClient,
+    user_id: int,
+    window_id: str,
+    thread_id: int,
+    text: str,
+    message: Message,
+    adapter: TelegramSessionAdapter,
+) -> bool:
+    """Only an explicit reply to the live Pi menu is literal, unsubmitted input."""
+    reply = message.reply_to_message
+    if reply is None or reply.text is None or not is_pi_menu_reply(message):
+        return False
+    target = get_pi_reply_target(
+        user_id, thread_id, message.chat.id, reply.message_id, reply.text, window_id
+    )
+    if target is None:
+        await safe_reply(message, PI_MENU_EXPIRED)
+        return True
+    if not text.isprintable():
+        await safe_reply(
+            message,
+            "Use a single line without control characters; tap Enter separately.",
+        )
+        return True
+    pane_id, fingerprint = target
+    sent, detail = await adapter.send_text(
+        window_id,
+        text,
+        submit=False,
+        pane_id=pane_id,
+        action_id=f"telegram-message:{message.chat.id}:{message.message_id}:pi-input",
+        expected_prompt=fingerprint,
+    )
+    if not sent:
+        await safe_reply(message, detail or "Unable to type into the Pi menu.")
+        return True
+    await ack_reaction(client, message.chat.id, message.message_id)
+    await asyncio.sleep(0.5)
+    await refresh_pi_menu(
+        client, user_id, window_id, thread_id, message.chat.id, pane_id
+    )
+    return True
 
 
 # --- Registry dispatch entry point ---

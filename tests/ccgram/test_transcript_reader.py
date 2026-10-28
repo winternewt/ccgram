@@ -1,6 +1,7 @@
 """Tests for transcript reader offset handling."""
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -563,3 +564,302 @@ async def test_fresh_mark_is_spent_once(tmp_path) -> None:
     await reader._process_session_file("sess", session_file, messages, window_id="@1")
 
     assert messages == []
+
+
+class TestStartupReplayBound:
+    """A restart must not re-send an unbounded undelivered backlog.
+
+    The delivered watermark only advances when the queue fully drains, so a
+    wedged or flood-limited queue leaves it far behind. Replaying that range
+    re-sends thousands of messages and trips Telegram flood control again.
+    """
+
+    @staticmethod
+    def _record(text: str) -> str:
+        return f'{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{text}"}}]}}}}\n'
+
+    def _reader(self, tmp_path, backlog: int, *, watermark: int = 0):
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(
+            "".join(self._record(f"m{i}") for i in range(backlog)), newline="\n"
+        )
+        state = MonitorState(state_file=tmp_path / "monitor_state.json")
+        state.update_session(
+            TrackedSession(
+                session_id="sess",
+                file_path=str(session_file),
+                last_byte_offset=watermark,
+            )
+        )
+        return TranscriptReader(state, IdleTracker()), state, session_file
+
+    async def test_backlog_larger_than_the_bound_is_skipped(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, state, session_file = self._reader(tmp_path, backlog=10)
+
+        messages: list = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+        assert messages == []
+        tracked = state.get_session("sess")
+        assert tracked is not None
+        assert tracked.parsed_offset == session_file.stat().st_size
+
+    async def test_backlog_within_the_bound_still_replays(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 1 << 20, raising=False)
+        reader, _state, session_file = self._reader(tmp_path, backlog=3)
+
+        messages: list = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+        assert [msg.text for msg in messages] == ["m0", "m1", "m2"]
+
+    async def test_zero_limit_replays_everything(self, tmp_path, monkeypatch) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 0, raising=False)
+        reader, _state, session_file = self._reader(tmp_path, backlog=10)
+
+        messages: list = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+        assert len(messages) == 10
+
+    async def test_only_the_first_poll_is_bounded(self, tmp_path, monkeypatch) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, _state, session_file = self._reader(tmp_path, backlog=10)
+
+        skipped: list = []
+        await reader._process_session_file(
+            "sess", session_file, skipped, window_id="@1"
+        )
+        assert skipped == []
+
+        with session_file.open("a") as transcript:
+            transcript.write(self._record("fresh"))
+
+        fresh: list = []
+        await reader._process_session_file("sess", session_file, fresh, window_id="@1")
+
+        assert [msg.text for msg in fresh] == ["fresh"]
+
+    async def test_a_session_tracked_after_startup_is_never_clamped(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A session first tracked by this process has no pre-restart backlog."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        session_file = tmp_path / "fresh.jsonl"
+        session_file.write_text(
+            "".join(self._record(f"m{i}") for i in range(10)), newline="\n"
+        )
+        state = MonitorState(state_file=tmp_path / "monitor_state.json")
+        reader = TranscriptReader(state, IdleTracker())
+        # Tracked at offset 0 by a replay request during this process.
+        state.update_session(
+            TrackedSession(session_id="fresh", file_path=str(session_file))
+        )
+
+        messages: list = []
+        await reader._process_session_file(
+            "fresh", session_file, messages, window_id="@1"
+        )
+
+        assert [msg.text for msg in messages] == [f"m{i}" for i in range(10)]
+
+    async def test_an_explicit_replay_request_is_never_clamped(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, _state, session_file = self._reader(tmp_path, backlog=10)
+        reader.allow_replay("sess")
+
+        messages: list = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+        assert len(messages) == 10
+
+    async def test_a_rebuild_failure_does_not_replay_a_clamped_backlog(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A rollback after clamping must re-clamp, not fall back to the watermark."""
+        from unittest.mock import AsyncMock, patch
+
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, state, session_file = self._reader(tmp_path, backlog=10)
+        skipped: list = []
+        await reader._process_session_file(
+            "sess", session_file, skipped, window_id="@1"
+        )
+        assert skipped == []
+
+        with session_file.open("a") as transcript:
+            transcript.write(self._record("live"))
+
+        # Force the parser-rebuild path and make it fail.
+        reader._parser_rebuild_pending.add("sess")
+        with patch.object(
+            reader,
+            "_rebuild_committed_parser_context",
+            AsyncMock(return_value=False),
+        ):
+            blocked: list = []
+            await reader._process_session_file(
+                "sess", session_file, blocked, window_id="@1"
+            )
+
+        tracked = state.get_session("sess")
+        assert tracked is not None
+        assert tracked.parsed_offset >= reader._startup_clamped["sess"]
+
+        # The live record written after the clamp is still delivered.
+        delivered: list = []
+        await reader._process_session_file(
+            "sess", session_file, delivered, window_id="@1"
+        )
+        assert [msg.text for msg in delivered] == ["live"]
+
+    async def test_canceling_a_skip_cannot_undo_the_clamp(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A canceled backlog skip must not reopen the clamped range."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, state, session_file = self._reader_with_backlog(tmp_path)
+        messages: list = []
+        await reader._process_session_file(
+            "sess", session_file, messages, window_id="@1"
+        )
+
+        assert messages == []
+        assert "sess" in reader._startup_clamped
+
+        reader.replay_from_watermark("sess")
+
+        tracked = state.get_session("sess")
+        assert tracked is not None
+        assert tracked.parsed_offset >= reader._startup_clamped["sess"]
+
+    async def test_a_refreshed_session_id_keeps_the_clamp(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The same transcript under a new id must not replay its backlog."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, _state, session_file = self._reader_with_backlog(tmp_path)
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+        clamped = reader._startup_clamped.get("sess")
+        assert clamped is not None
+
+        tracked = reader._adopt_tracking_for_file("refreshed", session_file)
+
+        assert tracked is not None
+        assert reader._startup_clamped.get("refreshed") == clamped
+        assert "refreshed" in reader._startup_sessions
+        # The replacement cursor starts at -1, which falls back to the delivered
+        # watermark and would replay the clamped range.
+        assert tracked.parsed_offset >= clamped
+
+        replayed: list = []
+        await reader._process_session_file(
+            "refreshed", session_file, replayed, window_id="@1"
+        )
+        assert replayed == []
+
+    def _reader_with_backlog(self, tmp_path):
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(
+            "".join(self._record(f"m{i}") for i in range(10)), newline="\n"
+        )
+        state = MonitorState(state_file=tmp_path / "monitor_state.json")
+        state.update_session(
+            TrackedSession(session_id="sess", file_path=str(session_file))
+        )
+        return TranscriptReader(state, IdleTracker()), state, session_file
+
+    async def test_the_parser_rebuild_reads_up_to_the_clamp_point(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A rebuild bounded by the watermark would miss the skipped turn."""
+        from ccgram import transcript_reader as module
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        reader, state, session_file = self._reader_with_backlog(tmp_path)
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+        tracked = state.get_session("sess")
+        assert tracked is not None
+        clamp = reader._startup_clamped["sess"]
+        watermark = tracked.last_byte_offset
+
+        seen: list[int] = []
+        real_parse = module.parse_records
+
+        def spy(entries, provider_name, parser_state, **kwargs):
+            seen.extend(entry.offset for entry in entries)
+            return real_parse(entries, provider_name, parser_state, **kwargs)
+
+        reader._parser_rebuild_pending.add("sess")
+        monkeypatch.setattr(module, "parse_records", spy)
+        await reader._process_session_file("sess", session_file, [], window_id="@1")
+
+        assert seen, "rebuild did not parse anything"
+        assert max(seen) <= clamp
+        if watermark < clamp:
+            # Bounded by the watermark, the rebuild would stop before the clamp.
+            assert max(seen) > watermark
+
+    async def test_a_refresh_before_the_first_poll_still_bounds_the_replay(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The refresh case that the poll-then-refresh test cannot reach."""
+        from ccgram.config import config
+
+        monkeypatch.setattr(config, "startup_replay_max_bytes", 120, raising=False)
+        session_file = tmp_path / "transcript.jsonl"
+        session_file.write_text(
+            "".join(self._record(f"m{i}") for i in range(10)), newline="\n"
+        )
+        state = MonitorState(state_file=tmp_path / "monitor_state.json")
+        state.update_session(
+            TrackedSession(session_id="old", file_path=str(session_file))
+        )
+        reader = TranscriptReader(state, IdleTracker())
+
+        # Refresh the id before any poll clamped the old one.
+        tracked = reader._adopt_tracking_for_file("new", session_file)
+        assert tracked is not None
+        assert "new" in reader._startup_sessions
+
+        messages: list = []
+        await reader._process_session_file(
+            "new", session_file, messages, window_id="@1"
+        )
+
+        assert messages == []
+        assert "new" in reader._startup_clamped
