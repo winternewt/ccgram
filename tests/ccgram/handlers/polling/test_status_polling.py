@@ -2492,7 +2492,7 @@ class TestUpdateStatusMessage:
             1,
             "@0",
             42,
-            detected=("PermissionPrompt", "Allow?", False),
+            detected=("PermissionPrompt", "Allow?", False, None),
         )
         env.enqueue.assert_not_called()
 
@@ -2528,7 +2528,7 @@ class TestCheckInteractiveOnly:
             1,
             "@0",
             42,
-            detected=("PermissionPrompt", "Allow?", False),
+            detected=("PermissionPrompt", "Allow?", False, None),
         )
 
     async def test_clears_interactive_mode_on_handle_failure(self) -> None:
@@ -2603,9 +2603,32 @@ class TestCheckInteractiveOnly:
             1,
             "@0",
             42,
-            detected=("PermissionPrompt", "Allow?", False),
+            detected=("PermissionPrompt", "Allow?", False, None),
         )
         if uses_pane_title:
             env.observe_tmux.get_pane_title.assert_called_once_with("@0")
         else:
             env.observe_tmux.get_pane_title.assert_not_called()
+
+
+@pytest.mark.parametrize(("advisory", "carried"), [(False, True), (True, False)])
+def test_detected_ui_carries_a_verified_menu(advisory: bool, carried: bool) -> None:
+    """The poll's detection hands its menu on, as a fresh capture would."""
+    from ccgram.handlers.polling.window_tick.apply import _detected_ui
+    from ccgram.providers.base import TerminalControl, TerminalMenu
+
+    menu = TerminalMenu(controls=(TerminalControl(label="Enter", keys=("Enter",)),))
+    status = StatusUpdate(
+        raw_text="Select model",
+        display_label="CommandMenu",
+        is_interactive=True,
+        ui_type="CommandMenu",
+        ui_advisory=advisory,
+        menu=menu,
+    )
+    assert _detected_ui(status) == (
+        "CommandMenu",
+        "Select model",
+        advisory,
+        menu if carried else None,
+    )

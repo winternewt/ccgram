@@ -64,7 +64,7 @@ from .observe import _check_vim_insert, _resolve_status, build_context
 if TYPE_CHECKING:
     from telegram import Bot
 
-    from ....providers.base import AgentProvider, StatusUpdate
+    from ....providers.base import AgentProvider, StatusUpdate, TerminalMenu
     from ....multiplexer.base import WindowRef as TmuxWindow
     from ..polling_runtime import PollingRuntime
     from ..polling_state import TerminalPollState
@@ -294,17 +294,19 @@ async def _notify_pane_lifecycle(
 # ── Interactive-only check ───────────────────────────────────────────────
 
 
-def _detected_ui(status: "StatusUpdate") -> tuple[str, str, bool] | None:
+def _detected_ui(
+    status: "StatusUpdate",
+) -> "tuple[str, str, bool, TerminalMenu | None] | None":
     """Return the poll's own detection, for handing to ``handle_interactive_ui``.
 
     None when the status carries no ``ui_type``, which leaves the callee to
-    capture and detect for itself exactly as before.
+    capture and detect for itself exactly as before. The menu travels with it
+    as ``_capture_interactive_content`` returns it: never for an advisory one.
     """
-    return (
-        (status.ui_type, status.raw_text, status.ui_advisory)
-        if status.ui_type
-        else None
-    )
+    if not status.ui_type:
+        return None
+    menu = None if status.ui_advisory else status.menu
+    return (status.ui_type, status.raw_text, status.ui_advisory, menu)
 
 
 async def _paint_blocked(
