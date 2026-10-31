@@ -17,7 +17,8 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   runs are on `ubuntu-24.04` with 3.14.10, so upstream is not known to pass on 26.04 either. Ruled
   out locally: serial run as CI runs it, a clean HOME and environment, CPython 3.14.4 (all pass).
   The fork's lock differs from upstream's only by the `pyromark` cap. Not tried: tmux as shipped on
-  26.04 (local is 3.5a). CI has no `workflow_dispatch`; a debug run needs a PR (the person's word). The delta `v4.18.4..v4.20.0` (65 files) was read in full by an Opus reader; the seat
+  26.04 (local is 3.5a). CI has no `workflow_dispatch`; a debug run needs a PR (the person's word).
+  Put to the person on desk #169 (pin CI to ubuntu-24.04, debug by PR, or leave it; default: leave). The delta `v4.18.4..v4.20.0` (65 files) was read in full by an Opus reader; the seat
   checked its findings: nothing hidden, no new dependency. v4.19.0 made YOLO the default launch mode
   (mode picker gone) and turned `CCGRAM_AUTOSTART_TRUST` on by default (folder trust written into
   `~/.claude.json` and Codex's `config.toml`, trust screens answered by the bot). The person, asked
