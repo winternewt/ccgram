@@ -13,6 +13,7 @@ release taken, and the patch table, which counts the fork's own commits on top o
 | v4.18.3 | merge `0717583` | its delta from v4.18.2 (8 files), by the seat | nothing | clean: logging of multiplexer outages throttled |
 | v4.18.4 | merge `0717583` | its delta from v4.18.3 (19 files), tests included, by the seat | nothing | clean: the event-stream monitor's Telegram imports moved behind a callback; no new host, process, file write or dependency |
 | v4.19.0, v4.20.0 | merge `b8f2437`, 2026-10-28 | the delta `v4.18.4..v4.20.0` as one (65 files), by an Opus reader, its findings checked by the seat: every hunk, both `conftest.py`, the archfit workflow, the Pi menu fixtures skimmed | the new archfit action commit and engine image (the guard keeps them from running here) | clean, nothing hidden, no new dependency, host or process. Red flag on defaults: YOLO became the launch default with the mode picker removed, and `CCGRAM_AUTOSTART_TRUST` came on by default (each launch writes its folder's trust into `~/.claude.json` and Codex's `config.toml`, and the bot answers a remaining trust screen, Codex's "trust all" for project hooks included). The person chose to keep the old safety (2026-10-28): row 232fe26. Noted, not flagged: a typed `@branch` skips `validate_branch_name` (git refuses the harmful forms); Pi's visible menus and input boxes are mirrored to Telegram. Conflicts in `text_handler.py` and `transcript_reader.py` resolved in the merge, with the tracking lookups folded to stay under the statement limit |
+| v4.21.0 | merge `f745579`, 2026-10-31 | its delta from v4.20.0 (77 files), by an Opus reader, its findings checked by the seat: every hunk, the 38 menu fixtures and their `provenance.json` | nothing | clean, no new flag: nothing runs by itself, no new dependency, process or host. Command menus of Claude Code and Codex are mirrored to Telegram like Pi's: a button sends only an index into a fixed per-provider key table, behind ownership, sequence, pane and fingerprint checks; a reply is typed only when printable and the menu takes text, never submitted. Noted: more menu text reaches Telegram (Claude's Settings with its usage tab and permission rules, Codex's statusline preview), and settings menus, permission mode included, are now a button away for an allowed user. Semantic conflict with 13faa61 (the poll's detection lacked the new menu value, so every detected prompt raised) resolved in the merge, with a test |
 
 ## Patch table
 
@@ -23,7 +24,7 @@ none is filed until the person asks (the priming, "Fixes for the upstream"). Fat
 the seat on 2026-10-17 from the commit messages; the person may move any.
 
 Check against git: `git log --no-merges --oneline <last release merged>..main -- src tests` (now
-`v4.20.0`) lists exactly the open rows, less each reverted pair and each closed row.
+`v4.21.0`) lists exactly the open rows, less each reverted pair and each closed row.
 
 | Commit | Why it exists | Upstream issue / PR | Fate | Retired by |
 |---|---|---|---|---|

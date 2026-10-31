@@ -7,8 +7,9 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 ## Upstream
 
-- **Now (2026-10-28): `main` is on `v4.20.0`** (merge `b8f2437`, with v4.19.0) plus the fork's own
-  commits. The delta `v4.18.4..v4.20.0` (65 files) was read in full by an Opus reader; the seat
+- **Now (2026-10-31): `main` is on `v4.21.0`** (merge `f745579`: clean by the gate, Claude and Codex
+  command menus mirrored like Pi's; a semantic conflict with `13faa61` fixed in the merge). Before
+  it, 2026-10-28: `v4.20.0` (merge `b8f2437`, with v4.19.0) plus the fork's own commits. The delta `v4.18.4..v4.20.0` (65 files) was read in full by an Opus reader; the seat
   checked its findings: nothing hidden, no new dependency. v4.19.0 made YOLO the default launch mode
   (mode picker gone) and turned `CCGRAM_AUTOSTART_TRUST` on by default (folder trust written into
   `~/.claude.json` and Codex's `config.toml`, trust screens answered by the bot). The person, asked
@@ -169,7 +170,7 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 ## Patch table
 
 - In `docs/FORK.md`: 27 rows, 20 open upstream-bound (all unfiled), 7 open local, 0 retired;
-  checked against git 2026-10-28 (`git log --no-merges v4.20.0..main -- src tests`: 27).
+  checked against git 2026-10-31 (`git log --no-merges v4.21.0..main -- src tests`: 27).
 
 ## The bot's logs
 
