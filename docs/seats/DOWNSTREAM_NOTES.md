@@ -17,15 +17,13 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   integration test (`test_missing_target_returns_empty_result[list_panes-...]`) errored once in the
   parallel run and passed alone: it touches the live tmux server. The entries below are the
   history of the v4.18.4 merge.
-- **`main` CI red since 2026-10-31, cause open.** `tests/integration/test_session_protocol.py::
-  test_real_tmux_list_history_send_respond_resume_and_replay` times out (no Claude session listed in
-  8 s) on `ac00aef` (twice) and on `71d0805`, which passed on 2026-10-28; so not v4.21.0. The
-  fork's runs now land on the `ubuntu-26.04` image with the system CPython 3.14.4; upstream's latest
-  runs are on `ubuntu-24.04` with 3.14.10, so upstream is not known to pass on 26.04 either. Ruled
-  out locally: serial run as CI runs it, a clean HOME and environment, CPython 3.14.4 (all pass).
-  The fork's lock differs from upstream's only by the `pyromark` cap. Not tried: tmux as shipped on
-  26.04 (local is 3.5a). CI has no `workflow_dispatch`; a debug run needs a PR (the person's word).
-  Put to the person on desk #169 (pin CI to ubuntu-24.04, debug by PR, or leave it; default: leave).
+- **The fork runs no CI since 2026-11-02.** The person disabled all three workflows (CI, archfit,
+  Release) on the fork: every push to `main` mailed them a failure. The gate's local test run is
+  the only check; don't re-enable a workflow without their word. The failure they hid, for the
+  record: `tests/integration/test_session_protocol.py::
+  test_real_tmux_list_history_send_respond_resume_and_replay` timed out on GitHub's `ubuntu-26.04`
+  image (system CPython 3.14.4) from 2026-10-31; it passes locally on 3.14.4 and on upstream's
+  `ubuntu-24.04` runs. Not tried: tmux as shipped on 26.04. Desk #169 closed by this.
 - Last release taken: `v4.16.0`, by replay. `main` is still on it (plus the fork's own commits, the
   last `5b01e00`).
 - **Waiting: v4.17.0, v4.18.0, v4.18.1, v4.18.2, v4.18.3, v4.18.4**, read as one delta from `v4.16.0` (277 files, about 13.6k
