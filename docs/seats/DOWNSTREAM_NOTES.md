@@ -7,7 +7,8 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 ## Upstream
 
-- **Now (2026-10-31): `main` is on `v4.21.0`** (merge `f745579`: clean by the gate, Claude and Codex
+- **Now (2026-11-04): `main` is on `v4.21.1`** (merge `921814a`: clean by the gate; every Claude hook
+  async, hook locks bounded at 2 s; suite 8754 + 391 integration passed). Before it, 2026-10-31: `v4.21.0` (merge `f745579`: clean by the gate, Claude and Codex
   command menus mirrored like Pi's; a semantic conflict with `13faa61` fixed in the merge). Before
   it, 2026-10-28: `v4.20.0` (merge `b8f2437`, with v4.19.0) plus the fork's own commits. The delta `v4.18.4..v4.20.0` (65 files) was read in full by an Opus reader; the seat
   checked its findings: nothing hidden, no new dependency. v4.19.0 made YOLO the default launch mode
