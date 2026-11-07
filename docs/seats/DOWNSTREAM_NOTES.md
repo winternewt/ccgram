@@ -201,6 +201,10 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   default: nothing posted). The desk question still told the person
   to set the value after they had: they asked for a kit report, filed as kit #198 (a seat keeping an
   open desk question current).
+- The upstream watcher wakes the seat on every push to the upstream's trunk, though only a release
+  tag is acted on. Whether to make it tags only (`--tags` on `[seat.downstream.watch.upstream]`;
+  `upstream-main` would then catch up only at each release) is on desk #224 (2026-11-07), S4,
+  default: unchanged. `blocked: desk #224`.
 
 ## Seats kit
 
@@ -215,7 +219,9 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 - The bot-driven plugin reload (ending an answer with a line the live bot typed into the pane)
   belonged to the old host, where the bot drove the seat's session. Here the person types the
-  reload; the priming's "Reloading plugins" says so (2026-10-25).
+  reload; the priming's "Reloading plugins" says so (2026-10-25). Since the kit's reload watcher
+  (D134), the kit types `/reload-plugins` into this pane itself once the session is idle; a seat need
+  not ask the person for it (2026-11-07, v0.1.141's `kit-tools`).
 
 - This fork follows the upstream's code style, not the person's own standards: lazy imports
   annotated `# Lazy:` (linted), relative imports, `__all__` re-exports.
