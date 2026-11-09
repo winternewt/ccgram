@@ -7,7 +7,14 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 ## Upstream
 
-- **Now (2026-11-04): `main` is on `v4.21.1`** (merge `921814a`: clean by the gate; every Claude hook
+- **Now (2026-11-09): `main` is on `v4.22.0`** (merge `a27fedc`: clean by the gate, an Opus reader on
+  every `src/` hunk; the session core's transcript reads rewritten upstream, so the fork's c57605d,
+  3154319 and 92675e6 were reverted first, and the merge was then clean; 92675e6 only in part, see
+  `docs/FORK.md`; suite 8863 + 392 integration passed). An upstream test flakes under xdist (a binding
+  leaked by `test_session.py::TestPruneStaleState::test_keeps_display_name_if_bound` breaks
+  `test_chat_scoped_binding_survives_sweep`), on v4.22.0 and the old `main` alike: not the merge's.
+  Desk #162's Draft 1 (transcript reads) is moot, noted there; Draft 2 still waits.
+  Before it, 2026-11-04: `v4.21.1` (merge `921814a`: clean by the gate; every Claude hook
   async, hook locks bounded at 2 s; suite 8754 + 391 integration passed). Before it, 2026-10-31: `v4.21.0` (merge `f745579`: clean by the gate, Claude and Codex
   command menus mirrored like Pi's; a semantic conflict with `13faa61` fixed in the merge). Before
   it, 2026-10-28: `v4.20.0` (merge `b8f2437`, with v4.19.0) plus the fork's own commits. The delta `v4.18.4..v4.20.0` (65 files) was read in full by an Opus reader; the seat
