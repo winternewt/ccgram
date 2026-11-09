@@ -9,6 +9,7 @@ Telegram calls the core directly. HTTP and WebSocket expose its wire contract.
 | `session_protocol/models.py` | Dataclasses, wire serialization, and protocol errors. |
 | `session_protocol/backend.py` | Consumer-owned backend Protocol and its Multiplexer adapter. |
 | `session_protocol/service.py` | Session discovery, snapshots, history, live replacements, and delivery correlations. |
+| `session_protocol/transcript_source.py` | Stat-first, append-only observation of one transcript: identity, generation, and byte-range reads of spilled values. |
 | `session_protocol/messages.py` | Canonical provider normalization, structured records, and the history/live message builder. |
 | `transcript_reader.py` | Delivery cursor reads and Telegram rendering of canonical records. |
 | `session_protocol/telegram.py` | In-process Telegram adapter and application-owned service access. |
@@ -63,13 +64,40 @@ Protocol message construction projects records into the declared `Part` fields.
 Telegram rendering retains its command metadata. Telegram history includes an
 `ExitPlanMode` plan before the corresponding tool and result rows.
 
-History and live mobile events read a verified immutable transcript observation.
-Generation tracking and parsing use the same bytes. The reader checks file identity
-and metadata before and after the read and retries a changing source. A final
-source check after publication prevents action preflight from accepting a source
-that changed during observation. An unstable source becomes unavailable and exposes
-no input actions. Snapshot bytes are released rather than retained in the session
-cache.
+History and live mobile events read a verified transcript observation. Each
+observation starts with one stat. An unchanged stamp (device, inode, size, mtime,
+and ctime) reads nothing. Otherwise one open handle checks the previous
+observation's identity, parses only the complete records appended since the last
+line boundary, and digests the new tail. The shared `MessageBuilder` in
+`messages.py` builds the message index only when something reads it. Message events
+are published for a session while an EventHub subscriber covers it, and for 300
+seconds after its last subscriber leaves (`SUBSCRIBER_GRACE_SECONDS`). The index is
+resident in that window and for 60 seconds after an on-demand history read
+(`INDEX_IDLE_SECONDS`). When publishing stops, the hub records a gap
+(`EventHub.mark_gap`), so any resume at or before it fails and the client reloads.
+Otherwise the source keeps only its cursor, and nothing is parsed except appended
+bytes and bounded windows: delivery correlation covers the appended range and the
+newest windows until the send is matched, and hook matching searches the newest 16 MiB
+(`HOOK_SCAN_BYTES`). A session that gains a subscriber gets its current messages as
+upserts from its first publish.
+
+The resident index keeps message IDs, revisions, source offsets, and small
+parts. A text, tool input, or diff over 4 KiB, and a tool output over 4 KiB, stay in
+the transcript. The index keeps their record offset and slot, and materialization
+re-reads that one record by byte range through a per-target LRU capped at 512 KiB.
+Publishing pins one handle per batch. A replaced transcript raises
+`SourceChangedError` and the source is observed again. Batch builds keep every value.
+
+Identity is the inode, the observed size, and a digest of the last 4 KiB before that
+size. A replacement, a truncation, or a changed tail increments the persisted
+generation and rebuilds from byte 0. A rewrite that keeps the inode, size, and tail
+is not detected; transcripts are append-only, so this is accepted. Gemini chats are
+JSONL (`session-*.jsonl`) and take the same incremental path. A failed read is retried when the stamp changes or
+after a backoff of 1 s doubling to 30 s.
+
+A source replaced or truncated during a read is retried. A final source check after
+publication prevents action preflight from accepting a source that changed during
+observation. An unstable source becomes unavailable and exposes no input actions.
 
 Telegram delivery uses a separate byte cursor because its receipt checkpoint must
 survive queue failures and restart. This is a delivery policy, not another provider
@@ -81,7 +109,9 @@ through its result checkpoint settles. Later unrelated output does not hold that
 fence. A completed backlog skip retires pending calls and tool fences for the
 skipped range. Canceled skips leave the durable checkpoint unchanged and rewind
 parsing if their receipts retire. Startup, completed skips, and session identity
-adoption rebuild parser context from committed source bytes. Source replacement
+adoption rebuild parser context from committed source bytes. The rebuild runs on
+the first poll that has new entries to parse, so an idle restored session costs
+nothing until it produces output. Source replacement
 retires the old generation's receipts and parser context. It emits a
 checkpoint-only batch at the replacement's EOF. Receipt settlement persists that
 boundary.
