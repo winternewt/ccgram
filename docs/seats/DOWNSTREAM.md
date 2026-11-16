@@ -126,8 +126,11 @@ once the person upgraded before the push landed and installed nothing; at least 
 
 ## Reloading plugins
 
-After adopting a kit release (`bin/move-to-tag vX`), the person reloads the seat's session: when
-move-to-tag prints its "left for the person" line, the seat says so in its report. The self-reload
+After a kit release the kit's typer reloads the seat's session itself (D134): `/reload-plugins` typed into its pane
+once the session is idle, said by the watchdog's `reload` lines. The seat asks the person for nothing; should a
+reload never take, it runs `watchdog.sh reload` for its own pane (the skill `kit-tools`).
+
+The self-reload
 through ccgram's auto-send (`handlers/messaging_pipeline/plugin_reload.py`) works only where the bot
 drives the seat's pane, which is not this seat's host; the person, 2026-10-25: "this hook doesn't
 work here ... Scratch it." So the seat never ends an answer with a line meant to fire it.
