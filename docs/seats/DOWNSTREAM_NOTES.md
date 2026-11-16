@@ -238,8 +238,11 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   file) are priming lines, handed to agents-kit/builder; its text landed as `0ee21637`. Items 4
   (a "what is live" script: the bot's running build against the fork's, delivery lag, failed
   sends) and 8 (after `/upgrade`, one formatting sample with the installed bot's own Python) are
-  this seat's own tools, `unattended`; both read the bot's host, so they go through its sysadmin
-  seat and carry no host name in a tracked file.
+  this seat's own tools; both read the bot's host, so they go through its sysadmin seat and carry
+  no host name in a tracked file. `done` 2026-11-16 as one procedure handed to that seat (installed
+  commit from the tool venv's `direct_url.json`, the last `Starting ccgram` line, a
+  `convert_to_entities` sample run by the installed bot's own Python, delivery failures in the log
+  since that start). Ask for it after each `/upgrade` and on any delivery fault.
 
 ## Seats kit
 
