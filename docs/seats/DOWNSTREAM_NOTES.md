@@ -242,7 +242,8 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   no host name in a tracked file. `done` 2026-11-16 as one procedure handed to that seat (installed
   commit from the tool venv's `direct_url.json`, the last `Starting ccgram` line, a
   `convert_to_entities` sample run by the installed bot's own Python, delivery failures in the log
-  since that start). Ask for it after each `/upgrade` and on any delivery fault.
+  since that start), kept by that seat as its `docs/CCGRAM_LIVE_CHECK.md`. Ask for it after each
+  `/upgrade` and on any delivery fault.
 
 ## Seats kit
 
