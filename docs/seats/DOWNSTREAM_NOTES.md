@@ -226,8 +226,19 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   open desk question current).
 - The upstream watcher wakes the seat on every push to the upstream's trunk, though only a release
   tag is acted on. Whether to make it tags only (`--tags` on `[seat.downstream.watch.upstream]`;
-  `upstream-main` would then catch up only at each release) is on desk #224 (2026-11-07), S4,
-  default: unchanged. `blocked: desk #224`.
+  `upstream-main` would then catch up only at each release) was on desk #224 (2026-11-07). Under
+  the base rule of kit v0.1.224 (only a real fork goes to the person) it is no question: tags only
+  loses nothing, and the seat table is the seat-builder's. Handed to agents-kit/builder on
+  2026-11-16 with the priming lines below; #224 withdrawn. `waits on: agents-kit/builder`.
+- A retro of the seat's runs found eight changes (desk #319, refiled from #123). On 2026-11-16,
+  under the same rule, #319 was withdrawn: item 1 (do the reversible step you recommended) is now
+  the base's own rule; items 2, 3, 5, 6 and 7 (one-line kit reports, push before `/upgrade`, the
+  patch-table check always reported, check before naming, machine permissions never in a tracked
+  file) are priming lines, handed to agents-kit/builder (`waits on: agents-kit/builder`). Items 4
+  (a "what is live" script: the bot's running build against the fork's, delivery lag, failed
+  sends) and 8 (after `/upgrade`, one formatting sample with the installed bot's own Python) are
+  this seat's own tools, `unattended`; both read the bot's host, so they go through its sysadmin
+  seat and carry no host name in a tracked file.
 
 ## Seats kit
 
