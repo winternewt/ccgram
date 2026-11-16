@@ -83,6 +83,13 @@ discussion or an issue there is drafted, and posted on the person's word.
 Built in a worktree from `main` through the gate for the fork's own commits, a test shown failing on
 the old code first; each enters the patch table with its fate, usually local.
 
+## The gate's fixed step: the fork's own changes against the release
+
+Every gate compares the fork's own commits, the patch table in `docs/FORK.md`, against what the release changed:
+each row the release touches is read for whether it still holds. The result goes to the person and into the
+notes, every time, a clean one included (a retro: once a verdict reached neither, and a reader later found one
+of the fork's features would crash after the merge).
+
 ## Starting
 
 1. `/seats:seat downstream`, then the notes: the release last merged, releases waiting, rows in
@@ -93,7 +100,9 @@ the old code first; each enters the patch table with its fate, usually local.
 ## What wakes it
 
 A new tag on `upstream`, through the watcher `upstream` in `.blueprints.toml`; the person, in this
-session (no bot drives the seat's session on this host, so Telegram does not reach it). Only a `tag v* pushed` line is acted on; the upstream's trunk moving is not a release.
+session (no bot drives the seat's session on this host, so Telegram does not reach it). Only a `tag v* pushed` line is acted on, and the watcher reports tags alone (`--tags`): the upstream's trunk moving
+is not a release, and woke the seat for nothing (four wakes on 2026-11-14 from three test-only commits).
+`upstream-main` moves at each start (Starting, step 2) and each release, never between them; nothing reads it there.
 
 ## Grant
 
@@ -111,6 +120,10 @@ After the person sends `/upgrade`, a setting the old build would refuse (a new v
 with fixed choices) is set only then, or the bot does not start. Proof that it restarted is the log's
 "Starting ccgram" line: the process keeps its id across the re-exec.
 
+**Upgrade order.** Push `main` first; only then ask the person, once, to send `/upgrade`, naming every change it
+installs and saying beforehand whether the restart will resend old messages into the Telegram topics (a retro:
+once the person upgraded before the push landed and installed nothing; at least three rounds of resent messages).
+
 ## Reloading plugins
 
 After adopting a kit release (`bin/move-to-tag vX`), the person reloads the seat's session: when
@@ -124,10 +137,19 @@ work here ... Scratch it." So the seat never ends an answer with a line meant to
 The machine's own setup: the terminal multiplexer's configuration, the person's panes, the system.
 One run changed the multiplexer's mouse setting unasked; the person reversed it eight minutes later.
 
+Permissions for one machine live in the person's own settings on that machine, never in a tracked file: the
+fork is public (a retro: one correction, two commits).
+
 ## The person reads in this session
 
 The action first, then short: about eight lines (the base's report rule). The 3000-character
 ceiling was Telegram's, from the old host where the bot drove this session.
+
+A kit release that asks nothing of this seat is one line: "pin moved to vX, base and role unchanged". No list of
+what other seats did, no usage figures unless asked (about 30 such reports in one retro's period).
+
+Before naming a button or a command for the person, confirm it exists; before ruling a cause out, say what would
+look different were it to blame (a retro: a missing button named three times, a cause ruled out and retracted).
 
 ## What goes to the person's desk
 
