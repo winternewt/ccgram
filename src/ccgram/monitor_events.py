@@ -37,6 +37,9 @@ class NewMessage:
     tool_name: str | None = None  # For tool_use messages, the tool name
     provider_name: str = ""  # Transcript provider for queue provenance
     timestamp: str | None = None  # ISO timestamp of the transcript entry
+    source_offset: int | None = None
+    source_generation: int | None = None
+    source_identity: tuple[int, int] | None = None
 
 
 @dataclass
