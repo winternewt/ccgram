@@ -7,6 +7,10 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 ## Upstream
 
+- **2026-11-18: `v4.24.0` pushed** (`38049cfc`, one commit: pausing marked topics, resume on reflag; 27
+  files, about 1,000 source lines). Its tag line was held by the quota throttle and came at the reset.
+  `upstream-main` fast-forwarded to it. Read-in-full pass running (one Opus reader); it waits on desk
+  #341 like `v4.23.0`, whose startup check it keeps. `urgent`: gate, then merge on a local branch.
 - **2026-11-16: `v4.23.0` gated, flagged, `blocked: desk #341`** (default: stay on `v4.22.0`). Merged
   on the local branch `merge/v4.23.0` (`e0e3ca45`) in the locked worktree `../ccgram-merge-4230`:
   two conflicts, both additions side by side; no fork row taken verbatim or superseded (c7341a4
