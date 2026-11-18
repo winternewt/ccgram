@@ -9,9 +9,16 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 - **2026-11-18: `v4.24.0` pushed** (`38049cfc`, one commit: pausing marked topics, resume on reflag; 27
   files, about 1,000 source lines). Its tag line was held by the quota throttle and came at the reset.
-  `upstream-main` fast-forwarded to it. Read-in-full pass running (one Opus reader); it waits on desk
-  #341 like `v4.23.0`, whose startup check it keeps. `urgent`: gate, then merge on a local branch.
-- **2026-11-16: `v4.23.0` gated, flagged, `blocked: desk #341`** (default: stay on `v4.22.0`). Merged
+  `upstream-main` fast-forwarded to it. Gated (one Opus reader, every line; findings checked): no
+  flag of its own; pausing is marked-mode only; in default mode one backend lookup per bound topic
+  per status poll, and a transcript replaced while the bot was down is read from its end. Merged as
+  `b17cc6dd` on the local branch `merge/v4.24.0` (on top of `e0e3ca45`) in `../ccgram-merge-4230`:
+  three additive conflicts folded, the lost-topics fix untouched. Unit 9762 passed; integration 412,
+  the same 19 tmux-3.8 failures. `blocked: desk #353` (filed 2026-11-18, replaces #341; default: stay
+  on `v4.22.0`). On option 1: the bot host's sysadmin seat runs `chmod g-w ~/.ccgram` on the
+  person's word, then `main` fast-forwards to `b17cc6dd`, then the person sends `/upgrade`, then
+  that seat runs its live check.
+- **2026-11-16: `v4.23.0` gated, flagged, desk #341, `superseded by` #353 with `v4.24.0`** (default: stay on `v4.22.0`). Merged
   on the local branch `merge/v4.23.0` (`e0e3ca45`) in the locked worktree `../ccgram-merge-4230`:
   two conflicts, both additions side by side; no fork row taken verbatim or superseded (c7341a4
   still needed: `collect_target_chats` unchanged). Unit 9709 passed; integration 411 passed, 19
