@@ -7,6 +7,7 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 ## Upstream
 
+- **2026-11-18: `v4.25.0` pushed** (`c672b31f`, 4 commits: upload downloads retried and staged, merged-message receipts settled per task, a workflow action bumped). `upstream-main` fast-forwarded to it. Gated (one Opus reader, every line; findings checked): no flag of its own; the fork's rows 99ae535 and 900057a share `message_queue.py` with it and still hold, other rows untouched. Merged clean as `1f03a706` on the local branch `merge/v4.25.0` (on top of `b17cc6dd`) in `../ccgram-merge-4230`; unit 9786 passed, integration 412, the same 19 tmux-3.8 failures. Still `blocked: desk #353` (it keeps v4.23.0's startup check); on option 1 `main` fast-forwards to `1f03a706` instead.
 - **2026-11-18: `v4.24.0` pushed** (`38049cfc`, one commit: pausing marked topics, resume on reflag; 27
   files, about 1,000 source lines). Its tag line was held by the quota throttle and came at the reset.
   `upstream-main` fast-forwarded to it. Gated (one Opus reader, every line; findings checked): no
