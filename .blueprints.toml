@@ -10,6 +10,9 @@ forge_gate_unseated = true
 # avatar, its account), and the sysadmin seat of the host the bot runs on answers with the bot's
 # service logs; a message from any of them wakes an idle seat (D83, D110).
 wake_from = "*/secretary agents-kit/admin */sysadmin"
+# This seat keeps a public fork of its upstream (branches, merge, patches, the marker), so it holds
+# fork-keeper beside downstream (the kit's D223, 2026-11-25).
+roles = "downstream fork-keeper"
 
 [seat.downstream.zulip]
 pool = "~/.config/agent-seat-blueprints/zulip/pool"
