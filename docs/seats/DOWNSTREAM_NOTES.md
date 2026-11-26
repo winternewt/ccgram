@@ -12,14 +12,15 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   `~/.ccgram` is 755 since the same day (its sysadmin seat). Leak check before the push: the word list over the
   whole range, the full check over the fork's own merge resolutions (the upstream's code carries absolute paths
   of its own). The person sent `/upgrade` the same evening; the live check (the host's new keeper, the machine's
-  own sysadmin seat): installed 757793a4, restarted 20:42Z, no startup refusal, no traceback, no dropped topic.
+  own sysadmin seat): installed 757793a4, restarted 19:42Z, no startup refusal, no traceback, no dropped topic.
   Two warnings, once each: a bounded startup replay skipped about 7 MiB of one session's undelivered transcript
   (v4.24.0's read-from-end, by design), and hooks incomplete (PermissionRequest, PreToolUse; both hooks predate
   v4.22.0 here; the warning is new tonight only because the bot last started on a 2026-10-25 build). The fix,
   `ccgram hook --install` as the bot's user, edits that user's global Claude settings (every session's tool calls),
   so the bot host's previous keeper put it to the person; the person ran it at 20:15Z, all 11 hooks installed (the 9
   old ones rewritten in place to the current command, no duplicates: `_replace_hook_commands`).
-  Asked for a delivery count an hour on.
+  Delivery seen working: the monitor's offsets file was saved at 20:14Z, after the start, and at 21:20Z still 0
+  dropped and 0 failed sends (the bot logs nothing per successful send). Desk #353 done.
 - **2026-11-18: `v4.25.0` pushed** (`c672b31f`, 4 commits: upload downloads retried and staged, merged-message receipts settled per task, a workflow action bumped). `upstream-main` fast-forwarded to it. Gated (one Opus reader, every line; findings checked): no flag of its own; the fork's rows 99ae535 and 900057a share `message_queue.py` with it and still hold, other rows untouched. Merged clean as `1f03a706` on the local branch `merge/v4.25.0` (on top of `b17cc6dd`) in `../ccgram-merge-4230`; unit 9786 passed, integration 412, the same 19 tmux-3.8 failures. Still `blocked: desk #353` (it keeps v4.23.0's startup check); on option 1 `main` fast-forwards to `1f03a706` instead.
 - **2026-11-18: `v4.24.0` pushed** (`38049cfc`, one commit: pausing marked topics, resume on reflag; 27
   files, about 1,000 source lines). Its tag line was held by the quota throttle and came at the reset.
