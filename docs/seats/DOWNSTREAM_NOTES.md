@@ -281,11 +281,9 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 - reflect after 2026-12-01: classes/base/BASE.md as of v0.1.275 (a direct message that mentions someone not in it:
   say at once in the first reply whether it is taken for a relay or a slip, then look into it).
 - Roles since v0.1.278 (7b965428, kit D223): `downstream fork-keeper`. fork-keeper adds a leak check of every
-  commit since the last push before each push to the fork (`bin/leak-check.sh` in the kit). This clone has no
-  `.leak_words` yet (the list is the person's; `.git/info/exclude` already ignores it). From v0.1.279 a check that
-  cannot run is unknown and the push waits (the builder, 2026-11-26: a self-drafted list is no substitute). So every
-  push to the fork is held, commits stay local, until the person writes the list: desk #435, a Your move (option 1
-  carries the seat's draft as one command). Once it exists: run the check over `origin/main..main`, then push.
+  commit since the last push before each push to the fork (`bin/leak-check.sh` in the kit), against the clone's
+  `.leak_words` (the person's list, written 2026-11-26, git-ignored through `.git/info/exclude`). Exit 3 is never
+  clean: the push waits. Before each push: `git log -p origin/main..main | grep '^+' | sh $K/bin/leak-check.sh`.
 - reflect after 2026-12-02: classes/downstream/DOWNSTREAM.md and classes/forkkeeper/FORK_KEEPER.md as of v0.1.278
   (the fork's duties moved to fork-keeper, held beside downstream; a leak check before every push to the fork).
 
