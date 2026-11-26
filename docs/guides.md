@@ -209,6 +209,7 @@ All settings accept both CLI flags and environment variables. CLI flags take pre
 | `CLAUDE_CONFIG_DIR` / `--claude-config-dir`           | `~/.claude`                    | Override Claude config directory (for wrappers like ce, cc-mirror)                                   |
 | `TMUX_SESSION_NAME` / `--tmux-session`                | `ccgram`                       | tmux session name                                                                                    |
 | `CCGRAM_MULTIPLEXER`                                  | `tmux`                         | Terminal multiplexer backend: `tmux` (default), `herdr` or `agterm`                                  |
+| `CCGRAM_TOPIC_DISCOVERY` / `--topic-discovery`        | `auto`                         | Automatic topic admission: `auto` or [`marked`](#marked-only-discovery)                              |
 | `CCGRAM_AGTERM_WORKSPACES`                            | `ccgram`                       | agterm only: workspaces ccgram may adopt sessions from (comma-separated; `*` for all)                |
 | `CCGRAM_PROVIDER` / `--provider`                      | `claude`                       | Default agent provider (`claude`, `codex`, `gemini`, `pi`, `shell`)                                  |
 | `CCGRAM_<NAME>_COMMAND`                               | _(from provider)_              | Per-provider launch command (env only, see below)                                                    |
@@ -308,6 +309,8 @@ The outbound queue can combine consecutive eligible transcript text tasks into o
 A text batch is eligible only when every item is a non-empty, one-part text task with the same **chat, topic/thread, window, role, and transcript source session**. CCGram stops at the first different or ineligible queued item, so it never crosses chats, topics, windows, roles, sessions, tool updates, status updates, media/TTS deliveries, or other queue boundaries. Batches are capped below Telegram's message limit and use a blank line between original items.
 
 Each item is rendered to Telegram entities before the items are combined. Formatting opened in one item cannot alter the next item's formatting, and each item retains the formatting it would have had if sent on its own. This makes the batching lossless for eligible text while preserving the delivery boundaries of everything else.
+
+A successful batch acknowledges every original queued item for the transcript watermark, even when several items share a checkpoint or the batch was retried after a Telegram flood wait. A cancelled send or an exhausted retry budget does not advance the watermark past that batch.
 
 ### Queue progress and severe backlogs
 
@@ -657,11 +660,80 @@ toolbar; pinned names survive window re-keying.
 
 `/bind` in an unbound topic lists windows that are running but not bound to
 any topic; one tap attaches the chosen one and renames the topic. Sessions
-started from the terminal still become topics automatically.
+started from the terminal become topics automatically in the default `auto` discovery mode.
 
 ## Creating Sessions from the Terminal
 
 Besides creating sessions through Telegram topics, you can create windows directly in your terminal multiplexer.
+
+The backend instructions below describe default automatic discovery. Use marked-only discovery to select which terminals receive automatic topics.
+
+### Marked-only discovery
+
+Set the discovery mode in the bot's `.env`, or start it with `ccgram run --topic-discovery marked`:
+
+```ini
+CCGRAM_TOPIC_DISCOVERY=marked
+```
+
+Use the same backend, actual native endpoint and CCGram state directory as the bot. Replace `TARGET` with an exact `id` from status, not a name, owner token, or active-terminal guess:
+
+```bash
+ccgram topic status
+ccgram topic mark TARGET
+ccgram topic status TARGET
+ccgram topic unmark TARGET
+```
+
+These commands do not require Telegram credentials. Status emits JSON with `backend`, `mode`, live `targets` (including native `marked`, `markable`, and diagnostic `owner`), and `pending_operations`. Diagnostics go to stderr. Status is read-only. The journal records unfinished native work and dispatch safety evidence, not a second selected-state preference.
+
+With the bot running, mutation uses the matching state/backend/native-endpoint daemon's private local socket. Otherwise the CLI must obtain the same exclusive state-writer lease. It never bypasses a busy lease or unavailable matching daemon with a direct native write. Unknown or mismatching native endpoint identity refuses mutation without creating new retryable manual intent. A matching backend name, target ID or copied native owner is insufficient. Opposite prepared intent blocks a manual write. Same-desired prepared work can complete through the shared journal, but cannot bypass an armed attempt.
+
+Selection uses a window-local native option in tmux, an owned ON/OFF manual-label suffix in standard Herdr, and the primary session flag in agterm. Herdr retains a visible OFF owner suffix after unmarking so restoration and reselection keep the same owner. Agterm splits remain explicitly bindable without marking the primary. Ordinary Herdr names do not mark a terminal; copying a layout can copy explicit marker state, so fresh-worker templates must omit it. See [native storage and restoration limits](design/marked-topic-discovery.md#native-storage-and-restoration).
+
+In marked mode, the native flag controls both discovery and existing markable primary topics:
+
+| Native action | Telegram result |
+| --- | --- |
+| Mark / flag | Create a topic, or reopen the same paused topic |
+| Unmark / unflag | Stop forwarding and close the topic; retain its history and terminal session |
+| Reflag after deleting a paused topic | Create a fresh topic; deleted history cannot be restored |
+
+In agterm, use the session flag in the UI; tint/color is not selection. Splits remain explicitly bindable and do not follow the primary flag. In `auto` mode, unmarking still leaves existing topics connected.
+
+Pause state and exact user/chat/topic/target/owner mappings survive bot restarts. The resume cutoff is tied to the source epoch and inode, so transcript replacement or truncation cannot suppress fresh replies. Resuming starts at the current transcript EOF: output produced while paused is not replayed, and the raw transcript is unchanged. Requests already dispatched to Telegram cannot be recalled. Native metadata that is unknown or unavailable does not authorize a new pause, resume, or deletion.
+
+Closing a flag-controlled topic in Telegram does not clear the native flag: if still flagged, it reopens. Use `/unbind` and confirm when you want an explicit detach. This clears selection without killing the terminal, and deliberate detach is exempt from orphan TTL.
+
+#### Delete unflagged topics
+
+Run `/sync unflagged` in the Topics group to preview your paused topics. Each preview lists up to 20 topic IDs and names; repeat for the remaining topics. **Delete listed topics** permanently deletes those topics and all their Telegram messages; running terminal sessions are kept. Confirmations expire after five minutes and after a bot restart. Re-run the command after a failure; failed deletions are not placed in the ordinary automatic retry queue.
+
+Immediately before each deletion, CCGram checks that the exact paused binding and native owner still match and that selection is affirmatively off. Reflagged/rebound targets, General, unfinished creation, uncertain native writes, splits, and unavailable metadata are protected. A local deletion claim blocks rebinding during the request. Native flag changes and Telegram deletion are not one atomic transaction: a flag change after the final check cannot recall an already dispatched delete.
+
+Closed topics remain visible until deleted. `/sync` without arguments retains its existing dead-session cleanup behavior.
+
+If unmarking withdraws an unfinished explicit creation, CCGram retains its exact uncertain claim unbound and does not delete a possibly human-used topic. With no armed attempt, reselecting the native target permits creation recovery. Reselection does not clear dispatch uncertainty. See [lifecycle details](design/marked-topic-discovery.md#unfinished-or-ambiguous-detach).
+
+#### Native-write quarantine and recovery
+
+A native update can remain able to execute after a timeout, EOF, cancellation or client crash. CCGram saves an armed attempt before any possible dispatch. In status, `pending_operations` has `attempt: null` for prepared work or an attempt containing its dispatched `desired` and `witness`.
+
+Guarded marker writes require the reviewed native versions: agterm 0.42.3, Herdr 0.9.5, or tmux 3.8. Other versions and unproved/proxied/inherited endpoints refuse before mutation. Ordinary backend protocol compatibility does not establish guarded-write support.
+
+An armed attempt blocks new admission and binding for the affected resource in **both** discovery modes. It also blocks further native writes and settlement. Existing bound topics, forwarding and liveness continue. Independent, verifiable owners remain usable.
+
+1. Run `ccgram topic status` with the bot's backend and state directory. Inspect pending work and stderr diagnostics.
+2. Do not delete or edit the journal, socket pins or state lock. Do not retry same/opposite marks to bypass quarantine.
+3. Save work before deciding whether to retire the affected native server through its normal native controls. **Retiring a tmux server can end its terminals and agents and lose unsaved work.** CCGram never kills or restarts native processes for recovery.
+4. Leave the journal intact. Existing maintenance checks exact native-process retirement and safe cleanup of its recorded pin. A timer, snapshot, replaced socket or changed PID is insufficient.
+5. After verified retirement, maintenance removes only that attempt. It freshly checks the owner and latest desired intent before any new journaled write. Use status again to inspect the result. A changed or unknown owner remains unresolved rather than being guessed.
+
+There is no separate recovery command or acknowledgement switch. Restarting ccgram, reselection, an absent target or a currently correct flag cannot prove an old write finished. If retirement or endpoint ownership cannot be proven, quarantine remains. Normal maintenance checks run every 60 seconds, but elapsed time is not completion evidence. Without the daemon, existing mark/unmark commands use the same retirement proof under the exclusive state lease. They cannot bypass an armed attempt whose executor remains alive or unproved. See the [dispatch contract](design/marked-topic-discovery.md#dispatch-quarantine-and-recovery).
+
+If mark/unmark reports `Native marker endpoint is unconfirmed`, inspect native provenance before retrying. The current agterm metadata check refused with macOS `-67034` (`errSecCSStaticCodeChanged`), indicating that the installed App and running image differ. Save work and restart agterm normally before retrying its provenance check. CCGram does not restart the App or bypass this check. An App restart alone does not settle an armed attempt. A positive live guarded agterm write has not been verified against the mismatched running image.
+
+When upgrading, stop older ccgram writers and CLI invocations before starting the new version. Ordinary v4.22 state without a marker journal remains valid. Unpublished three- or four-field development journal rows are incompatible and fail closed. Preserve them for investigation rather than deleting evidence or assuming a migration.
 
 ### tmux (default)
 
@@ -752,6 +824,25 @@ Live view (auto-refreshing) uses the same viewport capture at a smaller font siz
 - **Shell** — captures scrollback and extracts the last command+output block between prompt markers.
 
 Responses longer than 4096 characters are sent as a `.txt` document attachment instead of a text message.
+
+## Upload Photos and Documents to a Session
+
+Send a photo or document to a bound topic. CCGram saves the file under
+`.ccgram-uploads/` in the session's working directory and tells the agent where
+to find it, along with any caption. Telegram's hosted Bot API limits
+[`getFile` downloads](https://core.telegram.org/bots/api#getfile) to 20 MB.
+CCGram separately rejects files above its local cap of 50 MiB; this does not
+raise Telegram's limit.
+
+If Telegram times out or hits another transient network error while fetching the
+file, CCGram tries up to three times total, waiting half a second between
+attempts. Failed downloads don't leave a partial upload or replace an existing
+file. When creating a hard link returns `ENOTSUP` or `EOPNOTSUPP` (or `EPERM` on
+Linux, which can mean the filesystem doesn't support hard links), CCGram saves
+the completed file in a new subdirectory under `.ccgram-uploads/`. Telegram
+reports the actual path relative to the session's working directory, even if
+the agent notification fails. The file remains available, and CCGram does not
+resend the notification.
 
 ## File Delivery (`/send`)
 

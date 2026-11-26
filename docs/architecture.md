@@ -345,3 +345,33 @@ flowchart TB
 | Lazy-import contract                              | In-function `Import`/`ImportFrom` must carry `# Lazy: <reason>` (or live inside `if TYPE_CHECKING:` / `_reset_*_for_testing`). `scripts/lint_lazy_imports.py` runs in `make lint`; cycle regressions caught by `tests/integration/test_import_no_cycles.py`                                                                                                                                                                                           |
 
 <!-- markdownlint-enable MD060 -->
+
+## Archfit policy
+
+The schema 3 policy in `.archfit.yaml` groups the code into 24 modules across
+the `core` and `adapter` layers. It declares module paths, public surfaces,
+allowed dependencies, and volatility. The built-in rules enforce graph
+dependencies, coupling, cycles, layer direction, and ownership of new production
+code. Eleven converted custom rules remain notes; they document the multiplexer
+backend seam, provider detection, neutral event-stream ownership, bootstrap's
+supported handler entrypoint, and bot/runner direction. See `.archfit.yaml` for
+the exact module and dependency declarations.
+
+Use Archfit 4 commands: `archfit check` checks whole-graph drift,
+`archfit rules [path-or-rule]` shows applicable policy, and
+`archfit can <file> <target>` checks a proposed dependency. `archfit report`
+produces a report; Archfit 4 has no scorecard or LLM-summary command. The
+GitHub Action reports changes to the Archfit App, which decides the gate.
+The Python boundary audit tests remain repository-owned fitness checks.
+
+
+### Policy proposal pushes
+
+Install the repository hook with `git config --local core.hooksPath scripts/git-hooks`.
+For a checked-out feature branch pushed to `origin`, a changed policy runs the
+F1–F6 guards and `archfit check --policy .archfit.yaml`. Source and policy must be
+committed; candidate failures and unknown results block the push. This is a
+candidate preview, not owner approval. The required Archfit App gate still owns
+policy approval before merge. Policy-changing default-branch, tag, mixed-ref,
+foreign-remote, or non-checked-out pushes cannot use this proposal path. Ordinary
+source pushes retain the target-policy check.
