@@ -7,10 +7,12 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
 
 ## Upstream
 
-- **2026-11-26: desk #353 answered option 1** (take `v4.25.0` as it is). Asked the bot host's sysadmin seat
-  for `chmod g-w ~/.ccgram`. On its done: fast-forward `main` to `1f03a706`
-  (leak check, push, check origin), FORK.md verdict rows for v4.23.0 to v4.25.0, unlock `../ccgram-merge-4230`
-  and `branch -d` the three merge branches, ask the person once for `/upgrade`, then the sysadmin's live check.
+- **2026-11-26: `main` is on `v4.25.0`** (merge `f2b13a84` of `1f03a706`, desk #353 option 1; main had only seat
+  notes and the seat table since the branch was cut, so the tested tree stands, docs aside). The bot host's
+  `~/.ccgram` is 755 since the same day (its sysadmin seat). Leak check before the push: the word list over the
+  whole range, the full check over the fork's own merge resolutions (the upstream's code carries absolute paths
+  of its own). Next: the person's `/upgrade` (a Your move on #353), then the live check, now by the host's new
+  keeper, the machine's own sysadmin seat (handed over 2026-11-26).
 - **2026-11-18: `v4.25.0` pushed** (`c672b31f`, 4 commits: upload downloads retried and staged, merged-message receipts settled per task, a workflow action bumped). `upstream-main` fast-forwarded to it. Gated (one Opus reader, every line; findings checked): no flag of its own; the fork's rows 99ae535 and 900057a share `message_queue.py` with it and still hold, other rows untouched. Merged clean as `1f03a706` on the local branch `merge/v4.25.0` (on top of `b17cc6dd`) in `../ccgram-merge-4230`; unit 9786 passed, integration 412, the same 19 tmux-3.8 failures. Still `blocked: desk #353` (it keeps v4.23.0's startup check); on option 1 `main` fast-forwards to `1f03a706` instead.
 - **2026-11-18: `v4.24.0` pushed** (`38049cfc`, one commit: pausing marked topics, resume on reflag; 27
   files, about 1,000 source lines). Its tag line was held by the quota throttle and came at the reset.
