@@ -11,8 +11,11 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   notes and the seat table since the branch was cut, so the tested tree stands, docs aside). The bot host's
   `~/.ccgram` is 755 since the same day (its sysadmin seat). Leak check before the push: the word list over the
   whole range, the full check over the fork's own merge resolutions (the upstream's code carries absolute paths
-  of its own). Next: the person's `/upgrade` (a Your move on #353), then the live check, now by the host's new
-  keeper, the machine's own sysadmin seat (handed over 2026-11-26).
+  of its own). The person sent `/upgrade` the same evening; the live check (the host's new keeper, the machine's
+  own sysadmin seat): installed 757793a4, restarted 20:42Z, no startup refusal, no traceback, no dropped topic.
+  Two warnings, once each: a bounded startup replay skipped about 7 MiB of one session's undelivered transcript
+  (v4.24.0's read-from-end, by design), and hooks incomplete (PermissionRequest, PreToolUse; both hooks predate
+  v4.22.0 here, so likely old: asked whether earlier starts said it too). Asked for a delivery count an hour on.
 - **2026-11-18: `v4.25.0` pushed** (`c672b31f`, 4 commits: upload downloads retried and staged, merged-message receipts settled per task, a workflow action bumped). `upstream-main` fast-forwarded to it. Gated (one Opus reader, every line; findings checked): no flag of its own; the fork's rows 99ae535 and 900057a share `message_queue.py` with it and still hold, other rows untouched. Merged clean as `1f03a706` on the local branch `merge/v4.25.0` (on top of `b17cc6dd`) in `../ccgram-merge-4230`; unit 9786 passed, integration 412, the same 19 tmux-3.8 failures. Still `blocked: desk #353` (it keeps v4.23.0's startup check); on option 1 `main` fast-forwards to `1f03a706` instead.
 - **2026-11-18: `v4.24.0` pushed** (`38049cfc`, one commit: pausing marked topics, resume on reflag; 27
   files, about 1,000 source lines). Its tag line was held by the quota throttle and came at the reset.
