@@ -17,7 +17,8 @@ is reproducible from the steps below. First start there: fetched, `upstream-main
   (v4.24.0's read-from-end, by design), and hooks incomplete (PermissionRequest, PreToolUse; both hooks predate
   v4.22.0 here; the warning is new tonight only because the bot last started on a 2026-10-25 build). The fix,
   `ccgram hook --install` as the bot's user, edits that user's global Claude settings (every session's tool calls),
-  so the bot host's previous keeper put it to the person with the exact line; this seat does not ask it again.
+  so the bot host's previous keeper put it to the person; the person ran it at 20:15Z, all 11 hooks installed (the 9
+  old ones rewritten in place to the current command, no duplicates: `_replace_hook_commands`).
   Asked for a delivery count an hour on.
 - **2026-11-18: `v4.25.0` pushed** (`c672b31f`, 4 commits: upload downloads retried and staged, merged-message receipts settled per task, a workflow action bumped). `upstream-main` fast-forwarded to it. Gated (one Opus reader, every line; findings checked): no flag of its own; the fork's rows 99ae535 and 900057a share `message_queue.py` with it and still hold, other rows untouched. Merged clean as `1f03a706` on the local branch `merge/v4.25.0` (on top of `b17cc6dd`) in `../ccgram-merge-4230`; unit 9786 passed, integration 412, the same 19 tmux-3.8 failures. Still `blocked: desk #353` (it keeps v4.23.0's startup check); on option 1 `main` fast-forwards to `1f03a706` instead.
 - **2026-11-18: `v4.24.0` pushed** (`38049cfc`, one commit: pausing marked topics, resume on reflag; 27
